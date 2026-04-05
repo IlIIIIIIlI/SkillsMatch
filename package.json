@@ -1,0 +1,183 @@
+{
+  "name": "skill-map",
+  "displayName": "Skill Map",
+  "description": "Discover, classify, and visualize local, workspace, and online AI skills from one VS Code sidebar.",
+  "version": "0.0.1",
+  "private": true,
+  "icon": "media/skill-map-icon.png",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onView:skillMap.explorer",
+    "onView:skillMap.overview",
+    "onCommand:skillMap.refresh",
+    "onCommand:skillMap.configureOpenRouterKey",
+    "onCommand:skillMap.generateTags"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "skillMap.refresh",
+        "title": "Skill Map: Refresh Catalog"
+      },
+      {
+        "command": "skillMap.configureOpenRouterKey",
+        "title": "Skill Map: Configure OpenRouter API Key"
+      },
+      {
+        "command": "skillMap.clearOpenRouterKey",
+        "title": "Skill Map: Clear OpenRouter API Key"
+      },
+      {
+        "command": "skillMap.generateTags",
+        "title": "Skill Map: Generate AI Tags"
+      },
+      {
+        "command": "skillMap.openSkill",
+        "title": "Skill Map: Open Skill"
+      },
+      {
+        "command": "skillMap.setFilter",
+        "title": "Skill Map: Set Filter"
+      },
+      {
+        "command": "skillMap.clearFilter",
+        "title": "Skill Map: Clear Filter"
+      }
+    ],
+    "configuration": {
+      "title": "Skill Map",
+      "properties": {
+        "skillMap.openRouter.baseUrl": {
+          "type": "string",
+          "default": "https://openrouter.ai/api/v1",
+          "description": "Base URL for the OpenRouter-compatible chat completions endpoint."
+        },
+        "skillMap.openRouter.model": {
+          "type": "string",
+          "default": "openai/gpt-4.1-mini",
+          "description": "Model used to enrich skill descriptions into categories and 20 tags."
+        },
+        "skillMap.openRouter.autoGenerateTagsOnRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically enrich uncached skills when an OpenRouter API key is configured."
+        },
+        "skillMap.openRouter.batchSize": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 25,
+          "description": "Number of skills sent in a single OpenRouter enrichment request."
+        },
+        "skillMap.scan.additionalGlobalPaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional absolute paths to scan for global skills."
+        },
+        "skillMap.onlineSources.timeoutMs": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 3000,
+          "maximum": 60000,
+          "description": "Network timeout for fetching online skills."
+        },
+        "skillMap.visualization.maxTags": {
+          "type": "number",
+          "default": 36,
+          "minimum": 8,
+          "maximum": 80,
+          "description": "Maximum number of tags to render in the overlap visualization."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "skillMap",
+          "title": "Skill Map",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "skillMap": [
+        {
+          "id": "skillMap.explorer",
+          "name": "Explorer"
+        },
+        {
+          "id": "skillMap.overview",
+          "name": "Overview",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "skillMap.refresh",
+          "when": "view == skillMap.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "skillMap.configureOpenRouterKey",
+          "when": "view == skillMap.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "skillMap.generateTags",
+          "when": "view == skillMap.overview",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist out .vscode-test",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "watch:esbuild": "node esbuild.mjs --watch",
+    "watch:tsc": "tsc --noEmit -p tsconfig.json --watch",
+    "watch": "npm-run-all -p watch:*",
+    "compile": "npm run typecheck && node esbuild.mjs",
+    "package": "npm run typecheck && node esbuild.mjs --production",
+    "vscode:prepublish": "npm run package",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "pretest": "npm run compile && npm run compile-tests",
+    "test": "node ./out/test/runTest.js",
+    "scan:trivy": "trivy fs --scanners vuln,secret,misconfig --ignore-unfixed .",
+    "scan:clamav": "bash ./scripts/clamav-scan.sh"
+  },
+  "devDependencies": {
+    "@types/d3-force": "^3.0.10",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.17.57",
+    "@types/vscode": "^1.100.0",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.25.10",
+    "glob": "^11.0.3",
+    "mocha": "^11.7.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "d3-force": "^3.0.0"
+  }
+}
