@@ -107,7 +107,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; img-src ${this.webview.cspSource} https: data:; style-src ${this.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';"
+      content="default-src 'none'; img-src ${this.webview.cspSource} https: data: blob:; style-src ${this.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src blob:; connect-src blob:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Skill Map Overview</title>
@@ -128,7 +128,9 @@ export class OverviewWebviewSession implements vscode.Disposable {
         color: var(--vscode-foreground);
         background: var(--vscode-editor-background);
       }
-      #app { min-height: 100vh; display: flex; flex-direction: column; }
+      #app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+      /* Scrollable wrapper for everything above the graph */
+      .above-fold { flex-shrink: 0; overflow-y: auto; max-height: 45vh; }
       button, input, select { font: inherit; }
 
       /* ── Top bar ── */
@@ -136,7 +138,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
         padding: 10px 14px; border-bottom: 1px solid var(--panel-border);
         background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
-        position: sticky; top: 0; z-index: 10;
+        position: sticky; top: 0; z-index: 10; flex-shrink: 0;
       }
       .topbar-title { font-size: 13px; font-weight: 600; white-space: nowrap; margin-right: 4px; }
       .scope-tabs { display: flex; gap: 2px; }
@@ -176,6 +178,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 14px;
         border-bottom: 1px solid var(--panel-border);
         background: color-mix(in srgb, var(--panel-bg) 70%, transparent);
+        flex-shrink: 0;
       }
       .cat-chip {
         border: 1px solid var(--panel-border); border-radius: 999px; padding: 3px 10px;
@@ -195,6 +198,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
         padding: 12px 14px; border-bottom: 1px solid var(--panel-border);
         background: linear-gradient(180deg, color-mix(in srgb, var(--panel-bg) 90%, transparent), transparent);
+        flex-shrink: 0;
       }
       .setup-card {
         border: 1px solid var(--panel-border); border-radius: 14px; padding: 14px;
@@ -227,6 +231,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         border-bottom: 1px solid var(--panel-border);
         display: grid; gap: 10px;
         background: color-mix(in srgb, var(--panel-bg) 72%, transparent);
+        flex-shrink: 0;
       }
       .recommend-head {
         display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
@@ -293,7 +298,12 @@ export class OverviewWebviewSession implements vscode.Disposable {
       }
 
       /* ── Main layout ── */
-      .main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; flex: 1; min-height: 0; }
+      .main {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+        flex: 1; min-height: 0; overflow: hidden;
+        /* Ensure graph always has at least 400px regardless of content above */
+        min-height: 400px;
+      }
       @media (max-width: 1100px) {
         .control-deck { grid-template-columns: 1fr; }
       }
@@ -304,13 +314,14 @@ export class OverviewWebviewSession implements vscode.Disposable {
       /* ── Graph pane ── */
       .graph-pane {
         border-right: 1px solid var(--panel-border);
-        display: flex; flex-direction: column; min-height: 0;
+        display: flex; flex-direction: column; overflow: hidden;
       }
       .pane-header {
         display: flex; align-items: center; justify-content: space-between;
         padding: 10px 14px; border-bottom: 1px solid var(--panel-border); flex-shrink: 0;
       }
       .pane-title { font-size: 12px; font-weight: 600; opacity: 0.8; }
+      .pane-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .view-toggle {
         display: flex; gap: 2px;
         border: 1px solid var(--panel-border); border-radius: 6px; overflow: hidden;
@@ -321,18 +332,29 @@ export class OverviewWebviewSession implements vscode.Disposable {
       }
       .view-btn.active { opacity: 1; background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg)); }
       .graph-wrap {
-        flex: 1; position: relative; overflow: hidden; min-height: 300px;
+        flex: 1; position: relative; overflow: hidden; min-height: 0;
         background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 70%);
       }
-      #tag-graph { width: 100%; height: 100%; display: block; cursor: grab; }
+      #tag-graph { width: 100%; height: 100%; display: block; cursor: grab; position: absolute; top: 0; left: 0; }
       #tag-graph:active { cursor: grabbing; }
       #tag-graph-3d {
-        width: 100%; height: 100%; position: relative; overflow: hidden;
+        width: 100%; height: 100%; position: absolute; top: 0; left: 0; overflow: hidden;
       }
+      #tag-graph-3d canvas { display: block; }
       .graph-hint { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: 10px; opacity: 0.4; pointer-events: none; white-space: nowrap; }
 
       /* ── Right pane: list + detail ── */
-      .right-pane { display: flex; flex-direction: column; min-height: 0; }
+      .right-pane { display: flex; flex-direction: column; overflow: hidden; }
+      .selected-strip {
+        display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px;
+        border-bottom: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel-bg) 64%, transparent);
+      }
+      .selected-skill-pill {
+        border: 1px solid var(--panel-border); border-radius: 999px; padding: 4px 10px;
+        background: color-mix(in srgb, var(--accent) 14%, var(--panel-bg));
+        color: inherit; cursor: pointer; font-size: 11px;
+      }
       .skill-list-wrap {
         flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
       }
@@ -342,6 +364,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         transition: border-color 0.1s, box-shadow 0.1s;
       }
       .skill-card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--panel-border)); }
+      .skill-card.selected-card { border-color: color-mix(in srgb, var(--accent-strong) 65%, var(--panel-border)); }
       .skill-card.active {
         border-color: color-mix(in srgb, var(--accent) 70%, var(--panel-border));
         box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
@@ -371,6 +394,11 @@ export class OverviewWebviewSession implements vscode.Disposable {
       .btn {
         border: 1px solid var(--panel-border); border-radius: 6px; padding: 5px 12px;
         background: color-mix(in srgb, var(--panel-bg) 86%, transparent); color: inherit; cursor: pointer; font-size: 12px;
+      }
+      .btn.compact { padding: 4px 10px; font-size: 11px; }
+      .btn.selected-inline {
+        background: color-mix(in srgb, var(--accent) 18%, var(--panel-bg));
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--panel-border));
       }
       .btn.primary {
         background: color-mix(in srgb, var(--accent-strong) 28%, var(--panel-bg));

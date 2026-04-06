@@ -43,6 +43,9 @@ let expandedSkillId: string | undefined;
 let skillSearchTimer: number | undefined;
 let graphMode: '2d' | '3d' = '2d';
 let settingsOpen = false;
+let showSelectedOnly = false;
+let searchIsComposing = false;
+let questionIsComposing = false;
 
 // Live D3 simulation state
 let simulation: ReturnType<typeof forceSimulation<GraphNode>> | null = null;
@@ -90,7 +93,13 @@ function render(): void {
     return;
   }
 
-  const visibleSkills = applyLocalFilters(s.visibleSkills, searchText, selectedTag);
+  const focusedInput = captureFocusedInput();
+  const selectedSkillIds = new Set(s.recommendation.selectedSkillIds);
+  const visibleSkills = applySelectionListTransform(
+    applyLocalFilters(s.visibleSkills, searchText, selectedTag),
+    selectedSkillIds,
+    showSelectedOnly
+  );
   const selectedSkill =
     s.snapshot.skills.find((sk) => sk.id === s.selectedSkillId) ??
     visibleSkills.find((sk) => sk.id === s.selectedSkillId) ??
@@ -100,6 +109,17 @@ function render(): void {
   const counts = s.snapshot.counts;
   const selectedWorkspaceId = s.projectConfig.selectedWorkspaceId;
   const selectedRecommendationCount = s.recommendation.selectedSkillIds.length;
+  const selectedSkillStripHtml = selectedRecommendationCount === 0
+    ? '<span class="muted-copy">No skills selected yet.</span>'
+    : s.recommendation.selectedSkillIds
+        .map((skillId) => s.snapshot.skills.find((candidate) => candidate.id === skillId))
+        .filter((skill): skill is SkillRecord => Boolean(skill))
+        .map((skill) => `
+          <button class="selected-skill-pill" data-action="toggle-skill" data-skill-id="${skill.id}">
+            ${escapeHtml(skill.name)}
+          </button>
+        `)
+        .join('');
   const workspaceOptionsHtml = s.projectConfig.workspaces.length === 0
     ? '<option value="">Open a workspace to apply skills</option>'
     : s.projectConfig.workspaces.map((workspace) => `
@@ -163,16 +183,20 @@ function render(): void {
 
   // Skill cards — inline expanded detail, no bottom drawer
   const skillCardsHtml = visibleSkills.length === 0
-    ? '<div class="empty">No skills match the current filters.</div>'
+    ? `<div class="empty">${showSelectedOnly ? 'No selected skills match the current filters.' : 'No skills match the current filters.'}</div>`
     : visibleSkills.map((skill) => {
         const isActive = skill.id === selectedSkill?.id;
         const isExpanded = skill.id === expandedSkillId;
+        const isSelected = selectedSkillIds.has(skill.id);
         const tags = skill.tags.slice(0, 3).map((t) => `<span class="pill">${escapeHtml(t)}</span>`).join('');
 
         const expandedHtml = isExpanded ? `
 <div class="card-detail">
   <div class="card-detail-actions">
     <button class="btn primary" data-action="open-skill" data-skill-id="${skill.id}">Open file</button>
+    <button class="btn ${isSelected ? 'selected-inline' : ''}" data-action="toggle-recommended-skill" data-skill-id="${skill.id}">
+      ${isSelected ? 'Selected for Project' : 'Select for Project'}
+    </button>
     ${selectedTag ? `<button class="btn" data-action="select-tag-clear">Clear tag filter</button>` : ''}
   </div>
   <div class="tag-grid">
@@ -184,13 +208,16 @@ function render(): void {
   </div>
 </div>` : '';
 
-        return `<article class="skill-card ${isActive ? 'active' : ''} ${isExpanded ? 'expanded' : ''}" data-action="toggle-skill" data-skill-id="${skill.id}">
+        return `<article class="skill-card ${isActive ? 'active' : ''} ${isExpanded ? 'expanded' : ''} ${isSelected ? 'selected-card' : ''}" data-action="toggle-skill" data-skill-id="${skill.id}">
   <div class="card-row">
     <div class="card-main">
       <h3>${escapeHtml(skill.name)}</h3>
       <p>${escapeHtml(skill.description)}</p>
     </div>
     <div class="card-pills">
+      <button class="mini-toggle ${isSelected ? 'selected' : ''}" data-action="toggle-recommended-skill" data-skill-id="${skill.id}">
+        ${isSelected ? 'Selected' : 'Select'}
+      </button>
       <span class="pill">${escapeHtml(skill.scope)}</span>
       <span class="pill">${escapeHtml(skill.category)}</span>
       ${tags}
@@ -225,6 +252,7 @@ function render(): void {
   </div>
 </nav>
 
+<div class="above-fold">
 <section class="control-deck">
   <article class="setup-card setup-card-emphasis">
     <div class="setup-kicker">OpenRouter</div>
@@ -302,6 +330,7 @@ function render(): void {
   ${catHtml}
   ${tagFilterBadge}
 </div>
+</div>
 
 <div class="main">
   <div class="graph-pane">
@@ -322,13 +351,19 @@ function render(): void {
   <div class="right-pane">
     <div class="pane-header">
       <span class="pane-title">Skills · ${visibleSkills.length} shown</span>
+      <div class="pane-actions">
+        <span class="pill">${selectedRecommendationCount} selected</span>
+        <button class="btn compact" data-action="toggle-show-selected">${showSelectedOnly ? 'Show All' : 'Only Selected'}</button>
+        <button class="btn compact" data-action="apply-recommended-skills" ${selectedRecommendationCount === 0 ? 'disabled' : ''}>Apply</button>
+      </div>
     </div>
+    <div class="selected-strip">${selectedSkillStripHtml}</div>
     <div class="skill-list-wrap">${skillCardsHtml}</div>
   </div>
 </div>`;
 
   bindDomEvents();
-  restoreFocusedInput();
+  restoreFocusedInput(focusedInput);
 
   if (graphMode === '2d') {
     attachSvgToSimulation();
@@ -342,7 +377,11 @@ function render(): void {
 function rebuildGraph(): void {
   if (!state) return;
 
-  const visibleSkills = applyLocalFilters(state.visibleSkills, searchText, selectedTag);
+  const visibleSkills = applySelectionListTransform(
+    applyLocalFilters(state.visibleSkills, searchText, selectedTag),
+    new Set(state.recommendation.selectedSkillIds),
+    showSelectedOnly
+  );
   const graph = filterGraphForVisible(state, visibleSkills);
 
   if (simulation) {
@@ -350,9 +389,13 @@ function rebuildGraph(): void {
     simulation = null;
   }
 
+  const nodeCount = graph.nodes.length;
+  // Scale radius down as node count grows so the graph stays readable
+  const baseR = nodeCount > 30 ? 6 : nodeCount > 15 ? 8 : 10;
+  const scaleR = nodeCount > 30 ? 4 : nodeCount > 15 ? 6 : 8;
   liveNodes = graph.nodes.map((n) => ({
     ...n,
-    radius: 14 + Math.sqrt(n.count) * 10,
+    radius: baseR + Math.sqrt(n.count) * scaleR,
     x: undefined,
     y: undefined
   }));
@@ -362,16 +405,20 @@ function rebuildGraph(): void {
 
   simulation = forceSimulation(liveNodes)
     .force('center', forceCenter(360, 240))
-    .force('charge', forceManyBody<GraphNode>().strength(-120))
-    .force('collide', forceCollide<GraphNode>().radius((n: GraphNode) => n.radius + 5))
+    .force('charge', forceManyBody<GraphNode>().strength((n: GraphNode) => -30 - n.radius * 2))
+    .force('collide', forceCollide<GraphNode>().radius((n: GraphNode) => n.radius + 3).strength(0.7))
     .force(
       'link',
       forceLink<GraphNode, GraphLink>(liveLinks)
         .id((n: GraphNode) => n.id)
-        .distance((l: GraphLink) => Math.max(50, 140 - l.overlap * 8))
-        .strength((l: GraphLink) => Math.min(1, 0.1 + l.weight * 0.6))
+        .distance((l: GraphLink) => {
+          const s = l.source as GraphNode;
+          const t = l.target as GraphNode;
+          return Math.max(s.radius + t.radius + 4, 60 - l.overlap * 3);
+        })
+        .strength((l: GraphLink) => Math.min(0.8, 0.05 + l.weight * 0.4))
     )
-    .alphaDecay(0.02)
+    .alphaDecay(0.025)
     .on('tick', () => {
       if (graphMode === '2d') drawSvgFrame();
     });
@@ -520,8 +567,36 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
 
   wrap.innerHTML = '';
 
-  const W = wrap.clientWidth || 600;
-  const H = wrap.clientHeight || 400;
+  // Two-frame defer: first frame lets display:block take effect, second ensures layout
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!wrap.isConnected) return;
+      try {
+        initThreeScene(wrap);
+      } catch (err) {
+        wrap.innerHTML = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:red;font-size:11px;max-width:90%;text-align:center;">3D error: ${String(err)}</div>`;
+      }
+    });
+  });
+}
+
+function initThreeScene(wrap: HTMLElement): void {
+  const W = wrap.clientWidth || wrap.getBoundingClientRect().width || 600;
+  const H = wrap.clientHeight || wrap.getBoundingClientRect().height || 400;
+
+  // Show size so we can confirm layout is working
+  const dbg = document.createElement('div');
+  dbg.style.cssText = 'position:absolute;top:4px;left:4px;font-size:10px;opacity:0.5;pointer-events:none;z-index:10;';
+  dbg.textContent = `${W}×${H} · ${liveNodes.length} nodes`;
+  wrap.appendChild(dbg);
+
+  // Test WebGL availability before Three.js
+  const testCanvas = document.createElement('canvas');
+  const gl = testCanvas.getContext('webgl2') ?? testCanvas.getContext('webgl');
+  if (!gl) {
+    wrap.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:orange;font-size:11px;text-align:center;">WebGL not available in this webview</div>';
+    return;
+  }
 
   threeScene = new THREE.Scene();
   threeCamera = new THREE.PerspectiveCamera(50, W / H, 0.1, 100);
@@ -590,13 +665,14 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
         const key = [idA, idB].sort().join('||');
         const overlap = overlapMap.get(key) ?? 0;
 
-        // Target distance: closer for high overlap, farther for none
-        // nodeR for each node
-        const rA = 0.15 + (liveNodes[a].count / maxCount) * 0.45;
-        const rB = 0.15 + (liveNodes[b].count / maxCount) * 0.45;
+        // Use same radius formula as mesh building
+        const mxR = n > 30 ? 0.18 : n > 15 ? 0.24 : 0.32;
+        const mnR = n > 30 ? 0.07 : n > 15 ? 0.09 : 0.12;
+        const rA = mnR + (liveNodes[a].count / maxCount) * (mxR - mnR);
+        const rB = mnR + (liveNodes[b].count / maxCount) * (mxR - mnR);
         const targetDist = overlap > 0
-          ? Math.max(rA + rB - (overlap / maxCount) * (rA + rB) * 0.85, rA * 0.3 + rB * 0.3)
-          : rA + rB + 0.6 + (1 - overlap / maxCount) * 1.2;
+          ? Math.max(rA + rB - (overlap / maxCount) * (rA + rB) * 0.8, rA * 0.25 + rB * 0.25)
+          : rA + rB + 0.35 + (1 - overlap / maxCount) * 0.8;
 
         const f = (dist - targetDist) * 0.08 / dist;
         const fx = dx * f;
@@ -623,9 +699,13 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
   // ── Build meshes ──────────────────────────────────────────────────────────
   threeNodeMeshes = [];
 
+  // Scale radius down as node count grows so spheres don't swallow each other
+  const maxNodeR = n > 30 ? 0.18 : n > 15 ? 0.24 : 0.32;
+  const minNodeR = n > 30 ? 0.07 : n > 15 ? 0.09 : 0.12;
+
   liveNodes.forEach((node) => {
     const pos = positions.get(node.id)!;
-    const nodeR = 0.15 + (node.count / maxCount) * 0.45;
+    const nodeR = minNodeR + (node.count / maxCount) * (maxNodeR - minNodeR);
     const color = new THREE.Color(categoryColor(node.category));
     const isHighlighted = selectedTag === node.label;
     const isDimmed = selectedTag !== undefined && !isHighlighted;
@@ -751,6 +831,18 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
     threeRenderer!.render(threeScene!, threeCamera!);
   }
   animate();
+
+  // Resize when the pane changes size
+  const ro = new ResizeObserver(() => {
+    if (!threeRenderer || !threeCamera) return;
+    const nw = wrap.clientWidth;
+    const nh = wrap.clientHeight;
+    if (nw === 0 || nh === 0) return;
+    threeRenderer.setSize(nw, nh);
+    threeCamera.aspect = nw / nh;
+    threeCamera.updateProjectionMatrix();
+  });
+  ro.observe(wrap);
 }
 
 // ── DOM events ───────────────────────────────────────────────────────────────
@@ -760,6 +852,9 @@ function bindDomEvents(): void {
     el.addEventListener('click', (e) => {
       const action = el.dataset.action;
       if (!action || !state) return;
+      if (action !== 'toggle-skill') {
+        e.stopPropagation();
+      }
 
       switch (action) {
         case 'toggle-settings':
@@ -810,6 +905,11 @@ function bindDomEvents(): void {
         case 'apply-recommended-skills':
           settingsOpen = false;
           vscode.postMessage({ type: 'applyRecommendedSkills' });
+          break;
+        case 'toggle-show-selected':
+          showSelectedOnly = !showSelectedOnly;
+          rebuildGraph();
+          render();
           break;
         case 'clear-filter':
           settingsOpen = false;
@@ -876,24 +976,47 @@ function bindDomEvents(): void {
 
   const search = document.getElementById('skill-search') as HTMLInputElement | null;
   search?.addEventListener('input', (e) => {
-    lastFocusedInputId = 'skill-search';
     searchDraft = (e.target as HTMLInputElement).value;
-    if (skillSearchTimer) window.clearTimeout(skillSearchTimer);
-    skillSearchTimer = window.setTimeout(() => {
-      searchText = searchDraft;
-      skillSearchTimer = undefined;
-      rebuildGraph();
-      render();
-    }, 150);
+    lastFocusedInput = captureElementSelection(e.target as HTMLInputElement);
+    queueSearchRender();
+  });
+  search?.addEventListener('click', () => {
+    lastFocusedInput = captureElementSelection(search);
+  });
+  search?.addEventListener('keyup', () => {
+    lastFocusedInput = captureElementSelection(search);
+  });
+  search?.addEventListener('compositionstart', () => {
+    searchIsComposing = true;
+  });
+  search?.addEventListener('compositionend', (e) => {
+    searchIsComposing = false;
+    searchDraft = (e.target as HTMLInputElement).value;
+    lastFocusedInput = captureElementSelection(e.target as HTMLInputElement);
+    queueSearchRender();
   });
 
   const question = document.getElementById('skill-question') as HTMLInputElement | null;
   question?.addEventListener('input', (e) => {
-    lastFocusedInputId = 'skill-question';
     questionDraft = (e.target as HTMLInputElement).value;
+    lastFocusedInput = captureElementSelection(e.target as HTMLInputElement);
+  });
+  question?.addEventListener('click', () => {
+    lastFocusedInput = captureElementSelection(question);
+  });
+  question?.addEventListener('keyup', () => {
+    lastFocusedInput = captureElementSelection(question);
+  });
+  question?.addEventListener('compositionstart', () => {
+    questionIsComposing = true;
+  });
+  question?.addEventListener('compositionend', (e) => {
+    questionIsComposing = false;
+    questionDraft = (e.target as HTMLInputElement).value;
+    lastFocusedInput = captureElementSelection(e.target as HTMLInputElement);
   });
   question?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !questionIsComposing) {
       e.preventDefault();
       vscode.postMessage({ type: 'recommendSkills', question: questionDraft });
     }
@@ -908,15 +1031,64 @@ function bindDomEvents(): void {
   });
 }
 
-let lastFocusedInputId: string | undefined;
+interface FocusedInputState {
+  id: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
 
-function restoreFocusedInput(): void {
-  if (!lastFocusedInputId) return;
-  const el = document.getElementById(lastFocusedInputId) as HTMLInputElement | null;
-  el?.focus();
+let lastFocusedInput: FocusedInputState | undefined;
+
+function restoreFocusedInput(focusedInput?: FocusedInputState): void {
+  const target = focusedInput ?? lastFocusedInput;
+  if (!target) return;
+  const el = document.getElementById(target.id) as HTMLInputElement | null;
+  if (!el) return;
+  el.focus();
+  if (target.selectionStart !== null && target.selectionEnd !== null) {
+    el.setSelectionRange(target.selectionStart, target.selectionEnd);
+  }
+  lastFocusedInput = target;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function queueSearchRender(): void {
+  if (searchIsComposing) {
+    return;
+  }
+
+  if (skillSearchTimer) {
+    window.clearTimeout(skillSearchTimer);
+  }
+
+  skillSearchTimer = window.setTimeout(() => {
+    if (searchIsComposing) {
+      return;
+    }
+
+    searchText = searchDraft;
+    skillSearchTimer = undefined;
+    rebuildGraph();
+    render();
+  }, 220);
+}
+
+function captureFocusedInput(): FocusedInputState | undefined {
+  if (!(document.activeElement instanceof HTMLInputElement)) {
+    return lastFocusedInput;
+  }
+
+  return captureElementSelection(document.activeElement);
+}
+
+function captureElementSelection(input: HTMLInputElement): FocusedInputState {
+  return {
+    id: input.id,
+    selectionStart: input.selectionStart,
+    selectionEnd: input.selectionEnd
+  };
+}
 
 function applyLocalFilters(skills: SkillRecord[], search: string, tag?: string): SkillRecord[] {
   const q = search.trim().toLowerCase();
@@ -924,6 +1096,22 @@ function applyLocalFilters(skills: SkillRecord[], search: string, tag?: string):
     if (tag && !sk.tags.includes(tag)) return false;
     if (!q) return true;
     return `${sk.name} ${sk.description} ${sk.sourceLabel} ${sk.tags.join(' ')}`.toLowerCase().includes(q);
+  });
+}
+
+function applySelectionListTransform(
+  skills: SkillRecord[],
+  selectedSkillIds: ReadonlySet<string>,
+  onlySelected: boolean
+): SkillRecord[] {
+  const filtered = onlySelected
+    ? skills.filter((skill) => selectedSkillIds.has(skill.id))
+    : skills;
+
+  return [...filtered].sort((left, right) => {
+    const leftSelected = selectedSkillIds.has(left.id) ? 1 : 0;
+    const rightSelected = selectedSkillIds.has(right.id) ? 1 : 0;
+    return rightSelected - leftSelected || left.name.localeCompare(right.name);
   });
 }
 
