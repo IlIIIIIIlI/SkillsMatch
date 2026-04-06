@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { applyCategoryFilter, applySourceFilter } from '../shared/filterState';
 import type { SkillFilter, SkillRecord, SkillSourceSummary } from '../shared/types';
 import { SkillCatalogService } from '../core/skillCatalogService';
 
@@ -51,10 +52,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillTreeNode
         return item;
       }
       case 'category': {
-        const filter: SkillFilter = {
-          scope: 'all',
-          category: node.category
-        };
+        const filter = applyCategoryFilter(state.filter, node.category);
 
         const item = new vscode.TreeItem(`${node.category} (${node.count})`, vscode.TreeItemCollapsibleState.None);
         item.command = {
@@ -67,10 +65,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillTreeNode
         return item;
       }
       case 'source': {
-        const filter: SkillFilter = {
-          scope: node.source.scope,
-          sourceId: node.source.id
-        };
+        const filter = applySourceFilter(state.filter, node.source.id, node.source.scope);
         const item = new vscode.TreeItem(`${node.source.label} (${node.source.count})`, vscode.TreeItemCollapsibleState.Collapsed);
         item.command = {
           command: 'skillMap.setFilter',

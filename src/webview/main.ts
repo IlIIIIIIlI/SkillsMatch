@@ -8,6 +8,7 @@ import {
   type SimulationNodeDatum
 } from 'd3-force';
 
+import { applyCategoryFilter, applyScopeFilter, applySourceFilter } from '../shared/filterState';
 import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, TagGraphLink, TagGraphNode, ViewState, WebviewToExtensionMessage } from '../shared/types';
 
 declare function acquireVsCodeApi(): {
@@ -246,27 +247,29 @@ function bindDomEvents(): void {
         case 'scope':
           vscode.postMessage({
             type: 'setFilter',
-            filter: {
-              scope: (element.dataset.scope as SkillFilter['scope']) ?? 'all'
-            }
+            filter: applyScopeFilter(state.filter, (element.dataset.scope as SkillFilter['scope']) ?? 'all')
           });
           break;
         case 'category':
           vscode.postMessage({
             type: 'setFilter',
-            filter: {
-              scope: state.filter.scope,
-              category: element.dataset.category
-            }
+            filter: applyCategoryFilter(state.filter, element.dataset.category)
           });
           break;
         case 'source':
+          if (!element.dataset.source) {
+            break;
+          }
+          if (
+            element.dataset.scope !== 'workspace' &&
+            element.dataset.scope !== 'global' &&
+            element.dataset.scope !== 'online'
+          ) {
+            break;
+          }
           vscode.postMessage({
             type: 'setFilter',
-            filter: {
-              scope: (element.dataset.scope as SkillFilter['scope']) ?? 'all',
-              sourceId: element.dataset.source
-            }
+            filter: applySourceFilter(state.filter, element.dataset.source, element.dataset.scope)
           });
           break;
         case 'select-skill':
