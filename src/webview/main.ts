@@ -45,8 +45,13 @@ const bootState = (() => {
 
 let state = (vscode.getState() as ViewState | undefined) ?? bootState;
 let searchText = '';
+let searchDraft = '';
 let sourceSearchText = '';
+let sourceSearchDraft = '';
 let selectedTag: string | undefined;
+let skillSearchTimer: number | undefined;
+let sourceSearchTimer: number | undefined;
+const graphMarkupCache = new Map<string, string>();
 
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
   const message = event.data;
@@ -66,6 +71,8 @@ function render(): void {
     app.innerHTML = '<div class="shell"><div class="empty">Waiting for Skill Map state…</div></div>';
     return;
   }
+
+  const focusedInput = captureFocusedInput();
 
   const visibleSkills = applyLocalFilters(currentState.visibleSkills, searchText, selectedTag);
   const selectedSkill =
@@ -181,7 +188,7 @@ function render(): void {
         <h2>Sources</h2>
         <span class="status">${visibleSources.length}/${matchingSources.length} shown · ${currentState.snapshot.sources.length} total</span>
       </div>
-      <input id="source-search" class="search" type="search" placeholder="Search sources by label or path" value="${escapeAttribute(sourceSearchText)}" />
+      <input id="source-search" class="search" type="search" placeholder="Search sources by label or path" value="${escapeAttribute(sourceSearchDraft)}" />
       <div class="chip-row">${sourceChips}</div>
     </section>
 
@@ -203,7 +210,7 @@ function render(): void {
             <h2>Skills</h2>
             <span class="status">${visibleSkills.length} shown</span>
           </div>
-          <input id="skill-search" class="search" type="search" placeholder="Search by name, description, tag, or source" value="${escapeAttribute(searchText)}" />
+          <input id="skill-search" class="search" type="search" placeholder="Search by name, description, tag, or source" value="${escapeAttribute(searchDraft)}" />
           <div class="skill-list">${skillCards}</div>
         </section>
       </div>
@@ -220,6 +227,7 @@ function render(): void {
 </div>`;
 
   bindDomEvents();
+  restoreFocusedInput(focusedInput);
   renderGraph(document.getElementById('tag-graph') as SVGSVGElement | null, filterGraphForVisible(currentState, visibleSkills));
 }
 
@@ -245,9 +253,19 @@ function bindDomEvents(): void {
           vscode.postMessage({ type: 'generateTags' });
           break;
         case 'clear-filter':
+          if (skillSearchTimer) {
+            window.clearTimeout(skillSearchTimer);
+            skillSearchTimer = undefined;
+          }
+          if (sourceSearchTimer) {
+            window.clearTimeout(sourceSearchTimer);
+            sourceSearchTimer = undefined;
+          }
           selectedTag = undefined;
           searchText = '';
+          searchDraft = '';
           sourceSearchText = '';
+          sourceSearchDraft = '';
           vscode.postMessage({ type: 'clearFilter' });
           break;
         case 'scope':
@@ -280,6 +298,7 @@ function bindDomEvents(): void {
           break;
         case 'select-skill':
           if (element.dataset.skillId) {
+            state = { ...state, selectedSkillId: element.dataset.skillId };
             vscode.postMessage({ type: 'selectSkill', skillId: element.dataset.skillId });
             render();
           }
@@ -303,14 +322,28 @@ function bindDomEvents(): void {
 
   const search = document.getElementById('skill-search') as HTMLInputElement | null;
   search?.addEventListener('input', (event) => {
-    searchText = (event.target as HTMLInputElement).value;
-    render();
+    searchDraft = (event.target as HTMLInputElement).value;
+    if (skillSearchTimer) {
+      window.clearTimeout(skillSearchTimer);
+    }
+    skillSearchTimer = window.setTimeout(() => {
+      searchText = searchDraft;
+      skillSearchTimer = undefined;
+      render();
+    }, 150);
   });
 
   const sourceSearch = document.getElementById('source-search') as HTMLInputElement | null;
   sourceSearch?.addEventListener('input', (event) => {
-    sourceSearchText = (event.target as HTMLInputElement).value;
-    render();
+    sourceSearchDraft = (event.target as HTMLInputElement).value;
+    if (sourceSearchTimer) {
+      window.clearTimeout(sourceSearchTimer);
+    }
+    sourceSearchTimer = window.setTimeout(() => {
+      sourceSearchText = sourceSearchDraft;
+      sourceSearchTimer = undefined;
+      render();
+    }, 150);
   });
 }
 
@@ -361,6 +394,14 @@ function buildLegend(skills: SkillRecord[]): string {
 
 function renderGraph(svg: SVGSVGElement | null, graph: { nodes: TagGraphNode[]; links: TagGraphLink[] }): void {
   if (!svg) {
+    return;
+  }
+
+  const graphKey = buildGraphRenderKey(graph);
+  const cachedMarkup = graphMarkupCache.get(graphKey);
+  if (cachedMarkup) {
+    svg.innerHTML = cachedMarkup;
+    bindGraphNodeEvents(svg);
     return;
   }
 
@@ -415,8 +456,13 @@ function renderGraph(svg: SVGSVGElement | null, graph: { nodes: TagGraphNode[]; 
     })
     .join('');
 
-  svg.innerHTML = `${linkMarkup}${nodeMarkup}`;
+  const markup = `${linkMarkup}${nodeMarkup}`;
+  cacheGraphMarkup(graphKey, markup);
+  svg.innerHTML = markup;
+  bindGraphNodeEvents(svg);
+}
 
+function bindGraphNodeEvents(svg: SVGSVGElement): void {
   svg.querySelectorAll<SVGGElement>('.graph-node').forEach((node) => {
     node.addEventListener('click', () => {
       selectedTag = node.dataset.tag;
@@ -450,6 +496,62 @@ function categoryColor(category: string): string {
   };
 
   return palette[category] ?? palette.Other;
+}
+
+function captureFocusedInput():
+  | { id: string; selectionStart: number | null; selectionEnd: number | null }
+  | undefined {
+  if (!(document.activeElement instanceof HTMLInputElement) || !document.activeElement.id) {
+    return undefined;
+  }
+
+  return {
+    id: document.activeElement.id,
+    selectionStart: document.activeElement.selectionStart,
+    selectionEnd: document.activeElement.selectionEnd
+  };
+}
+
+function restoreFocusedInput(
+  focusedInput: { id: string; selectionStart: number | null; selectionEnd: number | null } | undefined
+): void {
+  if (!focusedInput) {
+    return;
+  }
+
+  const input = document.getElementById(focusedInput.id) as HTMLInputElement | null;
+  if (!input) {
+    return;
+  }
+
+  input.focus();
+  if (focusedInput.selectionStart !== null && focusedInput.selectionEnd !== null) {
+    input.setSelectionRange(focusedInput.selectionStart, focusedInput.selectionEnd);
+  }
+}
+
+function buildGraphRenderKey(graph: { nodes: TagGraphNode[]; links: TagGraphLink[] }): string {
+  const nodeKey = graph.nodes
+    .map((node) => `${node.id}:${node.count}:${node.category}`)
+    .sort()
+    .join('|');
+  const linkKey = graph.links
+    .map((link) => `${link.source}:${link.target}:${link.overlap}:${link.weight}`)
+    .sort()
+    .join('|');
+  return `${nodeKey}__${linkKey}`;
+}
+
+function cacheGraphMarkup(graphKey: string, markup: string): void {
+  graphMarkupCache.set(graphKey, markup);
+  if (graphMarkupCache.size <= 12) {
+    return;
+  }
+
+  const oldestKey = graphMarkupCache.keys().next().value;
+  if (oldestKey) {
+    graphMarkupCache.delete(oldestKey);
+  }
 }
 
 function truncate(value: string, length: number): string {
