@@ -94,7 +94,8 @@ function render(): void {
   const sourceChips = visibleSources
     .map((source) => {
       const isActive = currentState.filter.sourceId === source.id;
-      return `<button class="chip ${isActive ? 'active' : ''}" data-action="source" data-source="${escapeAttribute(source.id)}" data-scope="${source.scope}">${escapeHtml(source.label)} <strong>${source.count}</strong></button>`;
+      const displayLabel = truncateMiddle(source.label, 64);
+      return `<button class="chip ${isActive ? 'active' : ''}" data-action="source" data-source="${escapeAttribute(source.id)}" data-scope="${source.scope}" title="${escapeAttribute(source.label)}">${escapeHtml(displayLabel)} <strong>${source.count}</strong></button>`;
     })
     .join('');
 
@@ -123,7 +124,7 @@ function render(): void {
     <div class="meta-row">
       <span class="pill">${escapeHtml(selectedSkill.scope)}</span>
       <span class="pill">${escapeHtml(selectedSkill.category)}</span>
-      <span class="pill">${escapeHtml(selectedSkill.sourceLabel)}</span>
+      <span class="pill" title="${escapeAttribute(selectedSkill.sourceLabel)}">${escapeHtml(truncateMiddle(selectedSkill.sourceLabel, 64))}</span>
     </div>
     <h2>${escapeHtml(selectedSkill.name)}</h2>
     <p>${escapeHtml(selectedSkill.description)}</p>
@@ -218,7 +219,7 @@ function render(): void {
       <aside class="detail">
         <div class="section-head">
           <h2>Selected Skill</h2>
-          <span class="status">${selectedSkill ? escapeHtml(selectedSkill.sourceLabel) : 'Nothing selected'}</span>
+          <span class="status" title="${selectedSkill ? escapeAttribute(selectedSkill.sourceLabel) : ''}">${selectedSkill ? escapeHtml(truncateMiddle(selectedSkill.sourceLabel, 56)) : 'Nothing selected'}</span>
         </div>
         ${detailHtml}
       </aside>
@@ -556,6 +557,17 @@ function cacheGraphMarkup(graphKey: string, markup: string): void {
 
 function truncate(value: string, length: number): string {
   return value.length > length ? `${value.slice(0, Math.max(0, length - 1))}…` : value;
+}
+
+function truncateMiddle(value: string, length: number): string {
+  if (value.length <= length) {
+    return value;
+  }
+
+  const visible = Math.max(8, length - 1);
+  const head = Math.ceil(visible * 0.58);
+  const tail = Math.max(4, visible - head);
+  return `${value.slice(0, head)}…${value.slice(-tail)}`;
 }
 
 function escapeAttribute(value: string): string {
