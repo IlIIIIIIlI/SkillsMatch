@@ -139,7 +139,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
       .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
       .section-head h2 { margin: 0; font-size: 14px; }
       .chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
-      .content-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: 14px; }
+      .content-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
       .stack { display: grid; gap: 14px; }
       .search {
         width: 100%; border-radius: 12px; border: 1px solid var(--panel-border); padding: 10px 12px;
@@ -168,16 +168,17 @@ export class OverviewWebviewSession implements vscode.Disposable {
         font-size: 11px; background: color-mix(in srgb, var(--accent) 11%, var(--panel-bg));
       }
       .graph-wrap {
-        position: relative; min-height: 420px; overflow: hidden; border-radius: 14px; border: 1px solid var(--panel-border);
+        position: relative; min-height: 320px; overflow: hidden; border-radius: 14px; border: 1px solid var(--panel-border);
         background: radial-gradient(circle at center, color-mix(in srgb, var(--accent) 10%, transparent), transparent 62%), color-mix(in srgb, var(--panel-bg) 78%, transparent);
       }
       .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
       .legend .pill { cursor: default; }
-      svg { width: 100%; height: 420px; display: block; }
+      svg { width: 100%; height: 320px; display: block; }
       .empty { padding: 24px; text-align: center; opacity: 0.8; }
-      @media (max-width: 960px) {
-        .content-grid { grid-template-columns: 1fr; }
-        .skill-list { max-height: 420px; }
+      @media (min-width: 1380px) {
+        .content-grid { grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); }
+        .graph-wrap { min-height: 420px; }
+        svg { height: 420px; }
       }
     </style>
   </head>
