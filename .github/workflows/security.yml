@@ -56,7 +56,10 @@ jobs:
           sudo apt-get install -y clamav
 
       - name: Update virus database
-        run: sudo freshclam
+        run: |
+          sudo systemctl stop clamav-freshclam.service || true
+          sudo pkill freshclam || true
+          sudo freshclam --stdout
 
       - name: Scan tracked files
         run: bash ./scripts/clamav-scan.sh
