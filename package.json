@@ -19,7 +19,11 @@
     "onCommand:skillMap.refresh",
     "onCommand:skillMap.configureOpenRouterKey",
     "onCommand:skillMap.generateTags",
-    "onCommand:skillMap.openDashboard"
+    "onCommand:skillMap.openDashboard",
+    "onCommand:skillMap.configureGitHubSources",
+    "onCommand:skillMap.configureLightRagBaseUrl",
+    "onCommand:skillMap.syncKnowledgeBase",
+    "onCommand:skillMap.applyRecommendedSkills"
   ],
   "main": "./dist/extension.js",
   "capabilities": {
@@ -41,12 +45,32 @@
         "title": "Skill Map: Configure OpenRouter API Key"
       },
       {
+        "command": "skillMap.openOpenRouterSettings",
+        "title": "Skill Map: Open OpenRouter Settings"
+      },
+      {
+        "command": "skillMap.configureLightRagBaseUrl",
+        "title": "Skill Map: Configure LightRAG Base URL"
+      },
+      {
+        "command": "skillMap.configureGitHubSources",
+        "title": "Skill Map: Configure GitHub Skill Sources"
+      },
+      {
         "command": "skillMap.clearOpenRouterKey",
         "title": "Skill Map: Clear OpenRouter API Key"
       },
       {
         "command": "skillMap.generateTags",
         "title": "Skill Map: Generate AI Tags"
+      },
+      {
+        "command": "skillMap.syncKnowledgeBase",
+        "title": "Skill Map: Sync LightRAG Knowledge Base"
+      },
+      {
+        "command": "skillMap.applyRecommendedSkills",
+        "title": "Skill Map: Apply Recommended Skills To Project"
       },
       {
         "command": "skillMap.openSkill",
@@ -62,7 +86,8 @@
       },
       {
         "command": "skillMap.openDashboard",
-        "title": "Skill Map: Open Dashboard"
+        "title": "Skill Map: Open Dashboard",
+        "icon": "media/open-dashboard.svg"
       }
     ],
     "configuration": {
@@ -76,7 +101,7 @@
         "skillMap.openRouter.model": {
           "type": "string",
           "default": "openai/gpt-4.1-mini",
-          "description": "Model used to enrich skill descriptions into categories and 20 tags."
+          "description": "OpenRouter model used for AI tag enrichment and skill recommendation."
         },
         "skillMap.openRouter.autoGenerateTagsOnRefresh": {
           "type": "boolean",
@@ -104,6 +129,36 @@
           "minimum": 3000,
           "maximum": 60000,
           "description": "Network timeout for fetching online skills."
+        },
+        "skillMap.onlineSources.githubUrls": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "GitHub repository, folder, or direct SKILL.md URLs to scan for online skills."
+        },
+        "skillMap.lightRag.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:9621",
+          "description": "Base URL for the LightRAG API server used to build the skills knowledge base."
+        },
+        "skillMap.lightRag.autoSyncOnRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically sync the current skills catalog into LightRAG after each refresh."
+        },
+        "skillMap.lightRag.syncTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 10000,
+          "maximum": 600000,
+          "description": "Maximum time to wait for LightRAG indexing to finish."
+        },
+        "skillMap.project.applyRelativePath": {
+          "type": "string",
+          "default": ".codex/skills/skill-map-curated",
+          "description": "Workspace-relative path where recommended skills are copied into the current project."
         },
         "skillMap.visualization.maxTags": {
           "type": "number",
@@ -163,6 +218,11 @@
           "command": "skillMap.openDashboard",
           "when": "view == skillMap.explorerInline",
           "group": "navigation"
+        },
+        {
+          "command": "skillMap.openDashboard",
+          "when": "view == skillMap.overview",
+          "group": "navigation@0"
         }
       ]
     }
@@ -187,6 +247,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.57",
+    "@types/three": "^0.183.1",
     "@types/vscode": "1.95.0",
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.25.10",
@@ -196,6 +257,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "d3-force": "^3.0.0"
+    "d3-force": "^3.0.0",
+    "three": "^0.183.2"
   }
 }

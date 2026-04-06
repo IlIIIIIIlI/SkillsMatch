@@ -41,6 +41,89 @@ export class OpenRouterClient {
     return insights;
   }
 
+  public async recommendSkills(input: {
+    question: string;
+    retrievedContext?: string;
+    candidates: SkillRecord[];
+  }): Promise<{
+    summary?: string;
+    skills: Array<{ id: string; reason: string; score: number }>;
+  }> {
+    const endpoint = new URL('chat/completions', ensureTrailingSlash(this.config.baseUrl)).toString();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://github.com',
+        'X-Title': 'Skill Map'
+      },
+      body: JSON.stringify({
+        model: this.config.model,
+        temperature: 0.15,
+        response_format: {
+          type: 'json_object'
+        },
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'You recommend the best AI agent skills for a developer question.',
+              'Return JSON only in the shape {"summary":"...","skills":[{"id":"...","reason":"...","score":0}]}',
+              'Choose at most 8 skills, sorted from most relevant to least relevant.',
+              'Use only skill ids that appear in the provided candidates.',
+              'Reasons must be brief and concrete.'
+            ].join(' ')
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              question: input.question,
+              retrievedContext: input.retrievedContext ?? '',
+              candidates: input.candidates.map((skill) => ({
+                id: skill.id,
+                name: skill.name,
+                description: skill.description,
+                category: skill.category,
+                scope: skill.scope,
+                source: skill.sourceLabel,
+                tags: skill.tags,
+                relativePath: skill.relativePath ?? ''
+              }))
+            })
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`OpenRouter request failed: ${response.status} ${response.statusText} ${text}`);
+    }
+
+    const payload = (await response.json()) as OpenRouterResponse;
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error('OpenRouter returned an empty response.');
+    }
+
+    const parsed = extractJson(content) as {
+      summary?: string;
+      skills?: Array<{ id?: string; reason?: string; score?: number }>;
+    };
+
+    return {
+      summary: parsed.summary,
+      skills: (parsed.skills ?? [])
+        .filter((entry): entry is { id: string; reason?: string; score?: number } => Boolean(entry.id))
+        .map((entry) => ({
+          id: entry.id,
+          reason: entry.reason?.trim() || 'Relevant to the request.',
+          score: normalizeScore(entry.score)
+        }))
+    };
+  }
+
   private async enrichBatch(skills: SkillRecord[]): Promise<Map<string, SkillInsight>> {
     const endpoint = new URL('chat/completions', ensureTrailingSlash(this.config.baseUrl)).toString();
     const response = await fetch(endpoint, {
@@ -123,4 +206,12 @@ function extractJson(content: string): unknown {
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
+}
+
+function normalizeScore(value: number | undefined): number {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)));
 }

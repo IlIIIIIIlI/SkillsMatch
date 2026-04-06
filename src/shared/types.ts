@@ -92,6 +92,11 @@ export interface ViewState {
   filter: SkillFilter;
   visibleSkills: SkillRecord[];
   graph: TagGraph;
+  openRouter: OpenRouterState;
+  lightRag: LightRagState;
+  onlineSources: OnlineSourcesState;
+  recommendation: SkillRecommendationState;
+  projectConfig: ProjectConfigState;
   selectedSkillId?: string;
   busy: boolean;
   statusMessage?: string;
@@ -101,8 +106,16 @@ export type WebviewToExtensionMessage =
   | { type: 'ready' }
   | { type: 'refresh' }
   | { type: 'configureOpenRouterKey' }
+  | { type: 'openOpenRouterSettings' }
+  | { type: 'configureLightRagBaseUrl' }
+  | { type: 'configureGitHubSources' }
   | { type: 'clearOpenRouterKey' }
   | { type: 'generateTags' }
+  | { type: 'syncKnowledgeBase' }
+  | { type: 'recommendSkills'; question: string }
+  | { type: 'toggleRecommendedSkill'; skillId: string }
+  | { type: 'applyRecommendedSkills' }
+  | { type: 'setProjectWorkspace'; workspaceId?: string }
   | { type: 'setFilter'; filter: SkillFilter }
   | { type: 'clearFilter' }
   | { type: 'openSkill'; skillId: string }
@@ -111,3 +124,53 @@ export type WebviewToExtensionMessage =
 export type ExtensionToWebviewMessage =
   | { type: 'state'; state: ViewState }
   | { type: 'toast'; level: 'info' | 'error'; message: string };
+
+export interface OpenRouterState {
+  baseUrl: string;
+  model: string;
+  keyConfigured: boolean;
+}
+
+export interface LightRagState {
+  baseUrl: string;
+  workspace: string;
+  ready: boolean;
+  syncing: boolean;
+  syncedAt?: string;
+  statusMessage?: string;
+}
+
+export interface OnlineSourcesState {
+  githubUrls: string[];
+  lastError?: string;
+}
+
+export interface RecommendedSkill {
+  skillId: string;
+  reason: string;
+  score: number;
+}
+
+export interface SkillRecommendationState {
+  question: string;
+  loading: boolean;
+  source: 'lightrag+openrouter' | 'openrouter' | 'heuristic';
+  summary?: string;
+  statusMessage?: string;
+  items: RecommendedSkill[];
+  selectedSkillIds: string[];
+}
+
+export interface ProjectWorkspaceSummary {
+  id: string;
+  name: string;
+  fsPath: string;
+}
+
+export interface ProjectConfigState {
+  workspaces: ProjectWorkspaceSummary[];
+  selectedWorkspaceId?: string;
+  applyRelativePath: string;
+  lastAppliedAt?: string;
+  lastAppliedCount?: number;
+}

@@ -9,5 +9,8 @@ suite('extension smoke', () => {
     assert.ok(commands.includes('skillMap.refresh'));
     assert.ok(commands.includes('skillMap.configureOpenRouterKey'));
     assert.ok(commands.includes('skillMap.generateTags'));
+    assert.ok(commands.includes('skillMap.configureGitHubSources'));
+    assert.ok(commands.includes('skillMap.configureLightRagBaseUrl'));
+    assert.ok(commands.includes('skillMap.syncKnowledgeBase'));
   });
 });

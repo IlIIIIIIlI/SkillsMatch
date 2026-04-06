@@ -1,20 +1,17 @@
 # Skill Map
 
-Skill Map is a VS Code sidebar extension that discovers local, workspace, and online agent skills, classifies them from their descriptions, and visualizes overlapping tags as circles.
+Skill Map is a VS Code sidebar extension that discovers local, workspace, and online agent skills, classifies them from their descriptions, indexes them into LightRAG, and recommends the right skills for the current project.
 
 ## What It Does
 
 - Scans global skill roots for Claude, Copilot, Cursor, Gemini, OpenCode, and Codex.
 - Scans workspace-local skill roots such as `.claude/skills`, `.github/skills`, `.agent/skills`, and `.codex/skills`.
-- Fetches online skill catalogs from:
-  - `anthropics/skills`
-  - `github/awesome-copilot`
-  - `pytorch/pytorch`
-  - `openai/skills`
-  - `formulahendry/agent-skill-code-runner`
+- Fetches online skills from user-configured GitHub repository, folder, or direct `SKILL.md` links.
 - Groups skills by `workspace`, `global`, and `online`.
 - Classifies skills from their descriptions and displays category filters.
 - Supports OpenRouter-based enrichment for 20 tags per skill.
+- Syncs the current catalog into a dedicated LightRAG workspace.
+- Provides a question box that retrieves candidates from LightRAG, ranks them with the configured OpenRouter model, and lets you apply the selected skills into the current workspace.
 - Renders a tag overlap graph in a dedicated Webview view.
 
 ## Views
@@ -22,11 +19,13 @@ Skill Map is a VS Code sidebar extension that discovers local, workspace, and on
 - `Skill Map / Explorer`
   - Tree view for `All Skills`, `Categories`, `Workspace`, `Global`, and `Online`.
 - `Skill Map / Overview`
-  - Summary metrics
-  - Category and source filters
+  - Prominent OpenRouter configuration card
+  - LightRAG sync status and manual sync controls
+  - GitHub link configuration for online skills
+  - Question-driven skill recommendation
+  - Project workspace selector and apply-to-project flow
   - Searchable skill cards
-  - Detail panel
-  - Circle-based tag overlap visualization
+  - 2D / 3D tag overlap visualization
 
 ## OpenRouter
 
@@ -38,12 +37,22 @@ Settings:
 - `skillMap.openRouter.model`
 - `skillMap.openRouter.autoGenerateTagsOnRefresh`
 - `skillMap.openRouter.batchSize`
+- `skillMap.lightRag.baseUrl`
+- `skillMap.lightRag.autoSyncOnRefresh`
+- `skillMap.lightRag.syncTimeoutMs`
+- `skillMap.onlineSources.githubUrls`
+- `skillMap.project.applyRelativePath`
 
 Commands:
 
 - `Skill Map: Configure OpenRouter API Key`
+- `Skill Map: Open OpenRouter Settings`
 - `Skill Map: Clear OpenRouter API Key`
 - `Skill Map: Generate AI Tags`
+- `Skill Map: Configure LightRAG Base URL`
+- `Skill Map: Configure GitHub Skill Sources`
+- `Skill Map: Sync LightRAG Knowledge Base`
+- `Skill Map: Apply Recommended Skills To Project`
 
 ## Development
 
@@ -86,6 +95,7 @@ npm run dev:vscode
 
 ## Notes
 
-- Online skill refresh happens on extension activation, with cached fallback if GitHub is unavailable.
+- Online skills are discovered only from the GitHub links configured by the user.
+- LightRAG sync uses a dedicated workspace namespace derived from the current VS Code workspace set.
 - AI tag generation is cached by skill name + description hash to avoid repeated OpenRouter calls.
-- This extension targets desktop VS Code because local filesystem scanning depends on Node APIs.
+- This extension targets desktop VS Code because local filesystem scanning and project skill materialization depend on Node APIs.

@@ -15,10 +15,12 @@ export interface GitHubSkillSourceDescriptor {
   label: string;
   owner: string;
   repo: string;
-  branch: string;
-  type: 'official' | 'community';
-  strategy: 'tree' | 'contents';
+  branch?: string;
+  type: 'official' | 'community' | 'configured';
+  strategy: 'tree' | 'contents' | 'direct';
   includePrefixes: string[];
+  directManifestPath?: string;
+  sourceUrl?: string;
   singleSkillFallback?: {
     title: string;
     readmePath: string;
@@ -102,67 +104,10 @@ export const WORKSPACE_SOURCE_PATTERNS: WorkspaceSourcePattern[] = [
   }
 ];
 
-export const ONLINE_SKILL_SOURCES: GitHubSkillSourceDescriptor[] = [
-  {
-    id: 'anthropic-skills',
-    label: 'Anthropic Official Skills',
-    owner: 'anthropics',
-    repo: 'skills',
-    branch: 'main',
-    type: 'official',
-    strategy: 'contents',
-    includePrefixes: ['skills']
-  },
-  {
-    id: 'github-awesome-copilot',
-    label: 'GitHub Awesome Copilot',
-    owner: 'github',
-    repo: 'awesome-copilot',
-    branch: 'main',
-    type: 'community',
-    strategy: 'tree',
-    includePrefixes: ['skills/', 'plugins/']
-  },
-  {
-    id: 'pytorch-pytorch',
-    label: 'PyTorch Agent Skills',
-    owner: 'pytorch',
-    repo: 'pytorch',
-    branch: 'main',
-    type: 'official',
-    strategy: 'contents',
-    includePrefixes: ['.claude/skills']
-  },
-  {
-    id: 'openai-skills',
-    label: 'OpenAI Curated Skills',
-    owner: 'openai',
-    repo: 'skills',
-    branch: 'main',
-    type: 'official',
-    strategy: 'contents',
-    includePrefixes: ['skills']
-  },
-  {
-    id: 'formulahendry-code-runner',
-    label: 'Code Runner Skill',
-    owner: 'formulahendry',
-    repo: 'agent-skill-code-runner',
-    branch: 'main',
-    type: 'community',
-    strategy: 'contents',
-    includePrefixes: ['.github/skills'],
-    singleSkillFallback: {
-      title: 'Code Runner',
-      readmePath: 'README.md',
-      description: 'Run code snippets in multiple languages from an agent skill.'
-    }
-  }
-];
-
 export const OPENROUTER_SECRET_KEY = 'skillMap.openRouter.apiKey';
 export const ONLINE_CACHE_KEY = 'skillMap.onlineCache';
 export const AI_CACHE_KEY = 'skillMap.aiCache';
+export const LIGHTRAG_SYNC_CACHE_KEY = 'skillMap.lightRagSyncCache';
 
 export const ALLOWED_CATEGORIES = [
   'Development',

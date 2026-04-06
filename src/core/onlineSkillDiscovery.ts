@@ -1,5 +1,5 @@
 import type { SkillRecord } from '../shared/types';
-import { ONLINE_SKILL_SOURCES, type GitHubSkillSourceDescriptor } from './constants';
+import type { GitHubSkillSourceDescriptor } from './constants';
 import { parseSkillMarkdown } from './skillParser';
 import { hashText, mapLimit, slugify } from './utils';
 
@@ -10,20 +10,39 @@ interface GitHubTreeResponse {
   }>;
 }
 
+interface GitHubRepositoryResponse {
+  default_branch?: string;
+}
+
 interface GitHubContentItem {
   type: 'file' | 'dir';
   name: string;
   path: string;
 }
 
-export async function discoverOnlineSkills(timeoutMs: number): Promise<SkillRecord[]> {
-  const catalogs = await mapLimit(ONLINE_SKILL_SOURCES, 3, (source) => scanGitHubSource(source, timeoutMs));
+type ResolvedGitHubSkillSourceDescriptor = GitHubSkillSourceDescriptor & { branch: string };
+
+export async function discoverOnlineSkills(
+  sources: readonly GitHubSkillSourceDescriptor[],
+  timeoutMs: number
+): Promise<SkillRecord[]> {
+  const resolvedSources = await mapLimit(sources, 3, async (source) => ({
+    ...source,
+    branch: source.branch ?? await resolveDefaultBranch(source, timeoutMs)
+  }));
+
+  const catalogs = await mapLimit(resolvedSources, 3, (source) => scanGitHubSource(source, timeoutMs));
   return catalogs.flat().sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function scanGitHubSource(descriptor: GitHubSkillSourceDescriptor, timeoutMs: number): Promise<SkillRecord[]> {
+async function scanGitHubSource(
+  descriptor: ResolvedGitHubSkillSourceDescriptor,
+  timeoutMs: number
+): Promise<SkillRecord[]> {
   const manifestPaths =
-    descriptor.strategy === 'tree'
+    descriptor.strategy === 'direct'
+      ? [descriptor.directManifestPath ?? '']
+      : descriptor.strategy === 'tree'
       ? await listManifestPathsFromTree(descriptor, timeoutMs)
       : await listManifestPathsFromContents(descriptor, timeoutMs);
 
@@ -88,17 +107,23 @@ async function scanGitHubSource(descriptor: GitHubSkillSourceDescriptor, timeout
   return skills;
 }
 
-async function listManifestPathsFromTree(descriptor: GitHubSkillSourceDescriptor, timeoutMs: number): Promise<string[]> {
+async function listManifestPathsFromTree(
+  descriptor: ResolvedGitHubSkillSourceDescriptor,
+  timeoutMs: number
+): Promise<string[]> {
   const url = `https://api.github.com/repos/${descriptor.owner}/${descriptor.repo}/git/trees/${descriptor.branch}?recursive=1`;
   const payload = await fetchJson<GitHubTreeResponse>(url, timeoutMs);
   return payload.tree
-    .filter((entry) => entry.type === 'blob' && entry.path.endsWith('/SKILL.md'))
+    .filter((entry) => entry.type === 'blob' && (entry.path === 'SKILL.md' || entry.path.endsWith('/SKILL.md')))
     .map((entry) => entry.path)
     .filter((manifestPath) => descriptor.includePrefixes.some((prefix) => manifestPath.startsWith(prefix)))
     .sort((left, right) => left.localeCompare(right));
 }
 
-async function listManifestPathsFromContents(descriptor: GitHubSkillSourceDescriptor, timeoutMs: number): Promise<string[]> {
+async function listManifestPathsFromContents(
+  descriptor: ResolvedGitHubSkillSourceDescriptor,
+  timeoutMs: number
+): Promise<string[]> {
   const manifests = await Promise.all(
     descriptor.includePrefixes.map((prefix) => walkDirectory(descriptor, prefix, timeoutMs, 0))
   );
@@ -106,7 +131,7 @@ async function listManifestPathsFromContents(descriptor: GitHubSkillSourceDescri
 }
 
 async function walkDirectory(
-  descriptor: GitHubSkillSourceDescriptor,
+  descriptor: ResolvedGitHubSkillSourceDescriptor,
   directoryPath: string,
   timeoutMs: number,
   depth: number
@@ -145,6 +170,15 @@ async function fetchText(url: string, timeoutMs: number): Promise<string> {
     throw new Error(`GitHub request failed: ${response.status} ${response.statusText}`);
   }
   return response.text();
+}
+
+async function resolveDefaultBranch(descriptor: GitHubSkillSourceDescriptor, timeoutMs: number): Promise<string> {
+  const url = `https://api.github.com/repos/${descriptor.owner}/${descriptor.repo}`;
+  const payload = await fetchJson<GitHubRepositoryResponse>(url, timeoutMs);
+  if (!payload.default_branch) {
+    throw new Error(`Could not determine the default branch for ${descriptor.owner}/${descriptor.repo}.`);
+  }
+  return payload.default_branch;
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {

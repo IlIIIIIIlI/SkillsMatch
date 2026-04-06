@@ -33,11 +33,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('skillMap.configureOpenRouterKey', async () => {
       await service.configureOpenRouterKey();
     }),
+    vscode.commands.registerCommand('skillMap.openOpenRouterSettings', async () => {
+      await service.openOpenRouterSettings();
+    }),
+    vscode.commands.registerCommand('skillMap.configureLightRagBaseUrl', async () => {
+      await service.configureLightRagBaseUrl();
+    }),
+    vscode.commands.registerCommand('skillMap.configureGitHubSources', async () => {
+      await service.configureGitHubSources();
+    }),
     vscode.commands.registerCommand('skillMap.clearOpenRouterKey', async () => {
       await service.clearOpenRouterKey();
     }),
     vscode.commands.registerCommand('skillMap.generateTags', async () => {
       await service.generateTags({ announce: true });
+    }),
+    vscode.commands.registerCommand('skillMap.syncKnowledgeBase', async () => {
+      await service.syncKnowledgeBase({ announce: true, force: true });
+    }),
+    vscode.commands.registerCommand('skillMap.applyRecommendedSkills', async () => {
+      await service.applyRecommendedSkills();
     }),
     vscode.commands.registerCommand('skillMap.openSkill', async (skillId: string) => {
       await service.openSkill(skillId);
@@ -55,11 +70,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.ViewColumn.One,
         {
           enableScripts: true,
-          retainContextWhenHidden: true
+          retainContextWhenHidden: true,
+          localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist')]
         }
       );
 
-      const session = new OverviewWebviewSession(panel.webview, context.extensionUri, service);
+      const session = new OverviewWebviewSession(panel.webview, context.extensionUri, service, true);
       panel.onDidDispose(() => {
         session.dispose();
       });
