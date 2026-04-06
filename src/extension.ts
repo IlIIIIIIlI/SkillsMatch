@@ -79,6 +79,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       panel.onDidDispose(() => {
         session.dispose();
       });
+
+      await vscode.commands.executeCommand('workbench.action.closeSidebar');
     })
   );
 
