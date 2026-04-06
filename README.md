@@ -67,6 +67,12 @@ npm run watch
 
 Then launch `Run Skill Map` from the VS Code debugger.
 
+To force a clean Visual Studio Code development host from the terminal:
+
+```bash
+npm run dev:vscode
+```
+
 ## Project Structure
 
 - `src/core`

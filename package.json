@@ -6,7 +6,7 @@
   "private": true,
   "icon": "media/skill-map-icon.png",
   "engines": {
-    "vscode": "^1.100.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "Other",
@@ -14,10 +14,12 @@
   ],
   "activationEvents": [
     "onView:skillMap.explorer",
+    "onView:skillMap.explorerInline",
     "onView:skillMap.overview",
     "onCommand:skillMap.refresh",
     "onCommand:skillMap.configureOpenRouterKey",
-    "onCommand:skillMap.generateTags"
+    "onCommand:skillMap.generateTags",
+    "onCommand:skillMap.openDashboard"
   ],
   "main": "./dist/extension.js",
   "capabilities": {
@@ -57,6 +59,10 @@
       {
         "command": "skillMap.clearFilter",
         "title": "Skill Map: Clear Filter"
+      },
+      {
+        "command": "skillMap.openDashboard",
+        "title": "Skill Map: Open Dashboard"
       }
     ],
     "configuration": {
@@ -118,6 +124,12 @@
       ]
     },
     "views": {
+      "explorer": [
+        {
+          "id": "skillMap.explorerInline",
+          "name": "Skill Map"
+        }
+      ],
       "skillMap": [
         {
           "id": "skillMap.explorer",
@@ -146,6 +158,11 @@
           "command": "skillMap.generateTags",
           "when": "view == skillMap.overview",
           "group": "navigation"
+        },
+        {
+          "command": "skillMap.openDashboard",
+          "when": "view == skillMap.explorerInline",
+          "group": "navigation"
         }
       ]
     }
@@ -162,6 +179,7 @@
     "compile-tests": "tsc -p tsconfig.test.json",
     "pretest": "npm run compile && npm run compile-tests",
     "test": "node ./out/test/runTest.js",
+    "dev:vscode": "npm run compile && bash ./scripts/launch-vscode-dev.sh",
     "scan:trivy": "trivy fs --scanners vuln,secret,misconfig --ignore-unfixed .",
     "scan:clamav": "bash ./scripts/clamav-scan.sh"
   },
@@ -169,7 +187,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.17.57",
-    "@types/vscode": "^1.100.0",
+    "@types/vscode": "1.95.0",
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.25.10",
     "glob": "^11.0.3",

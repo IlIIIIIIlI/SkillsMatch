@@ -1,33 +1,5 @@
 {
   "version": "2.0.0",
-  "problemMatchers": [
-    {
-      "name": "skill-map-esbuild-watch",
-      "label": "skill-map-esbuild-watch",
-      "owner": "typescript",
-      "fileLocation": [
-        "relative",
-        "${workspaceFolder}"
-      ],
-      "pattern": [
-        {
-          "regexp": "^✘ \\[ERROR\\] (.+)$",
-          "message": 1
-        },
-        {
-          "regexp": "^\\s+(.+):(\\d+):(\\d+)$",
-          "file": 1,
-          "line": 2,
-          "column": 3
-        }
-      ],
-      "background": {
-        "activeOnStart": true,
-        "beginsPattern": "^\\[watch\\] .* started$",
-        "endsPattern": "^\\[watch\\] .* finished$"
-      }
-    }
-  ],
   "tasks": [
     {
       "label": "watch",
@@ -48,7 +20,30 @@
       "script": "watch:esbuild",
       "label": "npm: watch:esbuild",
       "group": "build",
-      "problemMatcher": "$skill-map-esbuild-watch",
+      "problemMatcher": {
+        "owner": "typescript",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": [
+          {
+            "regexp": "^✘ \\[ERROR\\] (.+)$",
+            "message": 1
+          },
+          {
+            "regexp": "^\\s+(.+):(\\d+):(\\d+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[watch\\] .* started$",
+          "endsPattern": "^\\[watch\\] .* finished$"
+        }
+      },
       "isBackground": true,
       "presentation": {
         "group": "watch",
