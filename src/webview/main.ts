@@ -9,6 +9,7 @@ import {
 } from 'd3-force';
 
 import { applyCategoryFilter, applyScopeFilter, applySourceFilter } from '../shared/filterState';
+import { filterSourceSummaries } from '../shared/sourceSearch';
 import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, TagGraphLink, TagGraphNode, ViewState, WebviewToExtensionMessage } from '../shared/types';
 
 declare function acquireVsCodeApi(): {
@@ -44,6 +45,7 @@ const bootState = (() => {
 
 let state = (vscode.getState() as ViewState | undefined) ?? bootState;
 let searchText = '';
+let sourceSearchText = '';
 let selectedTag: string | undefined;
 
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
@@ -80,7 +82,9 @@ function render(): void {
     })
     .join('');
 
-  const sourceChips = currentState.snapshot.sources.slice(0, 8)
+  const matchingSources = filterSourceSummaries(currentState.snapshot.sources, currentState.filter, sourceSearchText);
+  const visibleSources = matchingSources.slice(0, sourceSearchText ? 60 : 24);
+  const sourceChips = visibleSources
     .map((source) => {
       const isActive = currentState.filter.sourceId === source.id;
       return `<button class="chip ${isActive ? 'active' : ''}" data-action="source" data-source="${escapeAttribute(source.id)}" data-scope="${source.scope}">${escapeHtml(source.label)} <strong>${source.count}</strong></button>`;
@@ -175,8 +179,9 @@ function render(): void {
       <div class="chip-row">${categoryChips}</div>
       <div class="section-head" style="margin-top: 14px;">
         <h2>Sources</h2>
-        <span class="status">${currentState.snapshot.sources.length} roots</span>
+        <span class="status">${visibleSources.length}/${matchingSources.length} shown · ${currentState.snapshot.sources.length} total</span>
       </div>
+      <input id="source-search" class="search" type="search" placeholder="Search sources by label or path" value="${escapeAttribute(sourceSearchText)}" />
       <div class="chip-row">${sourceChips}</div>
     </section>
 
@@ -242,6 +247,7 @@ function bindDomEvents(): void {
         case 'clear-filter':
           selectedTag = undefined;
           searchText = '';
+          sourceSearchText = '';
           vscode.postMessage({ type: 'clearFilter' });
           break;
         case 'scope':
@@ -298,6 +304,12 @@ function bindDomEvents(): void {
   const search = document.getElementById('skill-search') as HTMLInputElement | null;
   search?.addEventListener('input', (event) => {
     searchText = (event.target as HTMLInputElement).value;
+    render();
+  });
+
+  const sourceSearch = document.getElementById('source-search') as HTMLInputElement | null;
+  sourceSearch?.addEventListener('input', (event) => {
+    sourceSearchText = (event.target as HTMLInputElement).value;
     render();
   });
 }
