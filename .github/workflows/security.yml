@@ -36,7 +36,8 @@ jobs:
           exit-code: 0
 
       - name: Upload Trivy SARIF
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+        if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) && github.event.repository.private == false
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
