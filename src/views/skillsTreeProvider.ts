@@ -40,14 +40,18 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillTreeNode
       case 'categoriesRoot': {
         const item = new vscode.TreeItem(
           `Categories (${state.snapshot.categories.length})`,
-          vscode.TreeItemCollapsibleState.Expanded
+          state.filter.category ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
         );
         item.iconPath = new vscode.ThemeIcon('symbol-class');
         return item;
       }
       case 'scopeRoot': {
         const count = state.snapshot.skills.filter((skill) => skill.scope === node.scope).length;
-        const item = new vscode.TreeItem(`${node.label} (${count})`, vscode.TreeItemCollapsibleState.Expanded);
+        const isActiveScope = state.filter.scope === node.scope;
+        const item = new vscode.TreeItem(
+          `${node.label} (${count})`,
+          isActiveScope ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed
+        );
         item.iconPath = new vscode.ThemeIcon('folder-library');
         return item;
       }
