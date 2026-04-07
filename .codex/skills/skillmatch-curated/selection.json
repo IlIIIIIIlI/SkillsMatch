@@ -1,0 +1,19 @@
+{
+  "generatedAt": "2026-04-07T11:48:33.722Z",
+  "source": "SkillMatch",
+  "question": "",
+  "skills": [
+    {
+      "id": "e2213257cfc2e7817f425efd46df2b83c0aa3a5d",
+      "name": "Android Native Dev",
+      "sourceLabel": "GitHub · MiniMax-AI/skills:skills",
+      "location": "https://github.com/MiniMax-AI/skills/blob/main/skills/android-native-dev/SKILL.md"
+    },
+    {
+      "id": "5ea9bf80a9f2a94736a8837d8a0fb6403546b463",
+      "name": "Build an MCP App (Interactive UI Widgets)",
+      "sourceLabel": "Claude Plugins Marketplace (/Users/andyyang/.claude/plugins/marketplaces/claude-plugins-official/plugins/mcp-server-dev/skills)",
+      "location": "/Users/andyyang/.claude/plugins/marketplaces/claude-plugins-official/plugins/mcp-server-dev/skills/build-mcp-app"
+    }
+  ]
+}

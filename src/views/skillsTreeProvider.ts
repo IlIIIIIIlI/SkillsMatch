@@ -90,6 +90,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillTreeNode
           arguments: [node.skill.id]
         };
         item.iconPath = new vscode.ThemeIcon(scopeIcon(node.skill.scope));
+        item.contextValue = isWorkspaceSkillDeletable(node.skill) ? 'workspaceSkillDeletable' : 'skill';
         return item;
       }
     }
@@ -139,6 +140,10 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<SkillTreeNode
         return Promise.resolve([]);
     }
   }
+}
+
+function isWorkspaceSkillDeletable(skill: SkillRecord): boolean {
+  return skill.scope === 'workspace' && skill.origin === 'local';
 }
 
 function filterEquals(left: SkillFilter, right: SkillFilter): boolean {

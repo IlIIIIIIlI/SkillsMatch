@@ -69,6 +69,7 @@ async function scanGitHubSource(
         manifestPath: buildRawUrl(descriptor, descriptor.singleSkillFallback.readmePath),
         repositoryUrl: `https://github.com/${descriptor.owner}/${descriptor.repo}`,
         rawUrl: buildRawUrl(descriptor, descriptor.singleSkillFallback.readmePath),
+        sourceBranch: descriptor.branch,
         relativePath: descriptor.singleSkillFallback.readmePath,
         lastSyncedAt: new Date().toISOString()
       }
@@ -99,6 +100,7 @@ async function scanGitHubSource(
       manifestPath: rawUrl,
       repositoryUrl: `https://github.com/${descriptor.owner}/${descriptor.repo}`,
       rawUrl,
+      sourceBranch: descriptor.branch,
       relativePath: manifestPath,
       lastSyncedAt: new Date().toISOString()
     } satisfies SkillRecord;

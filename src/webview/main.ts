@@ -56,6 +56,7 @@ const bootState = (() => {
 
 const isDashboard = app.getAttribute('data-dashboard') === 'true';
 const graphPrefs = readGraphPrefs();
+const layoutPrefs = readLayoutPrefs();
 
 let state = (vscode.getState() as ViewState | undefined) ?? bootState;
 let searchText = '';
@@ -80,6 +81,7 @@ let graphColorMode: 'category' | 'overlap' = graphPrefs.colorMode ?? 'category';
 let graphCategoryColors: Record<string, string> = graphPrefs.categoryColors ?? {};
 let hoveredNodeId: string | undefined;
 let hoverPointer: { x: number; y: number } | undefined;
+let topPanelsCollapsed = layoutPrefs.topPanelsCollapsed ?? false;
 let tagPromptDraft: string | undefined;
 let tagBatchSizeDraft: number | undefined;
 let tagMaxSkillsDraft: number | undefined;
@@ -343,6 +345,7 @@ function render(): void {
     ? 'Color = category'
     : 'Color = overlap count';
   const hasCustomCategoryColors = Object.keys(graphCategoryColors).length > 0;
+  const topPanelsToggleLabel = topPanelsCollapsed ? 'Show Top' : 'Hide Top';
 
   app.innerHTML = `
 <nav class="topbar">
@@ -353,6 +356,7 @@ function render(): void {
   <div class="topbar-sep"></div>
   <div class="status-dot ${s.busy ? 'busy' : ''}"></div>
   <span class="status-text">${escapeHtml(s.statusMessage ?? 'Ready')}</span>
+  <button class="icon-btn" data-action="toggle-top-panels" title="${topPanelsCollapsed ? 'Show setup panels' : 'Hide setup panels'}">${topPanelsCollapsed ? '▾' : '▴'} ${topPanelsToggleLabel}</button>
   <div class="settings-wrap">
     <button class="icon-btn" data-action="toggle-settings" title="Settings">⚙</button>
     <div class="settings-popover ${settingsOpen ? 'open' : ''}">
@@ -370,7 +374,7 @@ function render(): void {
   class="dashboard-layout ${isDashboard ? 'is-dashboard' : ''}"
   style="${isDashboard ? `${dashboardTopHeightPx ? `--dashboard-top-height:${dashboardTopHeightPx}px;` : ''} --graph-pane-width:${(graphPaneRatio * 100).toFixed(1)}%;` : ''}"
 >
-<div class="above-fold" id="above-fold">
+<div class="above-fold" id="above-fold" style="${topPanelsCollapsed ? 'display:none;' : ''}">
 <section class="control-deck">
   <article class="setup-card setup-card-emphasis">
     <div class="setup-kicker">OpenRouter</div>
@@ -512,7 +516,7 @@ function render(): void {
   </div>
 </div>
 </div>
-${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize top panels"></div>' : ''}
+${isDashboard && !topPanelsCollapsed ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize top panels"></div>' : ''}
 
 <div class="main ${isDashboard ? 'is-dashboard' : ''}" id="main-layout">
   <div class="graph-pane">
@@ -1336,6 +1340,11 @@ function bindDomEvents(): void {
       switch (action) {
         case 'toggle-settings':
           settingsOpen = !settingsOpen;
+          render();
+          break;
+        case 'toggle-top-panels':
+          topPanelsCollapsed = !topPanelsCollapsed;
+          persistLayoutPrefs();
           render();
           break;
         case 'refresh':
@@ -2262,11 +2271,36 @@ function readGraphPrefs(): {
   }
 }
 
+function readLayoutPrefs(): {
+  topPanelsCollapsed?: boolean;
+} {
+  try {
+    const raw = window.localStorage.getItem('skillmatch.layout-prefs.v1');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { topPanelsCollapsed?: boolean };
+    return {
+      topPanelsCollapsed: typeof parsed.topPanelsCollapsed === 'boolean' ? parsed.topPanelsCollapsed : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
 function persistGraphPrefs(): void {
   try {
     window.localStorage.setItem('skill-map.graph-prefs.v1', JSON.stringify({
       colorMode: graphColorMode,
       categoryColors: graphCategoryColors
+    }));
+  } catch {
+    // Ignore persistence failures inside the webview.
+  }
+}
+
+function persistLayoutPrefs(): void {
+  try {
+    window.localStorage.setItem('skillmatch.layout-prefs.v1', JSON.stringify({
+      topPanelsCollapsed
     }));
   } catch {
     // Ignore persistence failures inside the webview.

@@ -95,6 +95,10 @@
         "title": "SkillMatch: Open Skill"
       },
       {
+        "command": "skillMap.deleteSkill",
+        "title": "SkillMatch: Delete Skill"
+      },
+      {
         "command": "skillMap.setFilter",
         "title": "SkillMatch: Set Filter"
       },
@@ -261,6 +265,13 @@
           "command": "skillMap.openDashboard",
           "when": "view == skillMap.overview",
           "group": "navigation@0"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "skillMap.deleteSkill",
+          "when": "viewItem == workspaceSkillDeletable",
+          "group": "inline@1"
         }
       ]
     }

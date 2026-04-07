@@ -61,6 +61,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('skillMap.openSkill', async (skillId: string) => {
       await service.openSkill(skillId);
     }),
+    vscode.commands.registerCommand('skillMap.deleteSkill', async (skillId: string) => {
+      await service.deleteSkill(skillId);
+    }),
     vscode.commands.registerCommand('skillMap.setFilter', (filter: SkillFilter) => {
       service.setFilter(filter);
     }),

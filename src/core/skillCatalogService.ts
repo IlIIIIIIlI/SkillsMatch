@@ -27,6 +27,7 @@ import { discoverLocalSkills } from './localSkillDiscovery';
 import { OpenRouterClient } from './openRouterClient';
 import { discoverOnlineSkills } from './onlineSkillDiscovery';
 import { buildAppliedSkillDirectoryName, resolveProjectApplyPath } from './projectSkillConfig';
+import { materializeSkill } from './skillMaterialization';
 import {
   buildKnowledgeBaseFileSource,
   buildLightRagWorkspaceId,
@@ -562,25 +563,24 @@ export class SkillCatalogService {
     await fs.rm(targetRoot, { recursive: true, force: true });
     await fs.mkdir(targetRoot, { recursive: true });
 
-    const manifests = await mapLimit(selectedSkills, 4, async (skill) => {
+    await mapLimit(selectedSkills, 3, async (skill) => {
+      const skillDir = path.join(targetRoot, buildAppliedSkillDirectoryName(skill));
       try {
-        return {
-          skill,
-          content: await loadSkillManifestContent(skill, settings.timeoutMs)
-        };
+        await materializeSkill(skill, skillDir, settings.timeoutMs);
+        return;
       } catch {
-        return {
-          skill,
-          content: synthesizeSkillManifest(skill)
-        };
+        // Fall back to manifest-only materialization when the full skill payload cannot be resolved.
+      }
+
+      try {
+        const content = await loadSkillManifestContent(skill, settings.timeoutMs);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf8');
+      } catch {
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, 'SKILL.md'), synthesizeSkillManifest(skill), 'utf8');
       }
     });
-
-    for (const entry of manifests) {
-      const skillDir = path.join(targetRoot, buildAppliedSkillDirectoryName(entry.skill));
-      await fs.mkdir(skillDir, { recursive: true });
-      await fs.writeFile(path.join(skillDir, 'SKILL.md'), entry.content, 'utf8');
-    }
 
     await fs.writeFile(
       path.join(targetRoot, 'selection.json'),
@@ -664,6 +664,39 @@ export class SkillCatalogService {
     }
 
     await vscode.env.openExternal(vscode.Uri.parse(skill.location));
+  }
+
+  public async deleteSkill(skillId: string): Promise<void> {
+    const skill = this.state.snapshot.skills.find((candidate) => candidate.id === skillId);
+    if (!skill) {
+      return;
+    }
+
+    if (skill.scope !== 'workspace' || skill.origin !== 'local') {
+      vscode.window.showWarningMessage('Only local workspace skills can be deleted from SkillMatch.');
+      return;
+    }
+
+    const target = resolveWorkspaceSkillDeleteTarget(skill);
+    if (!target) {
+      vscode.window.showWarningMessage('SkillMatch could not determine a safe delete target for this skill.');
+      return;
+    }
+
+    const confirmed = await vscode.window.showWarningMessage(
+      `Delete workspace skill "${skill.name}"?`,
+      { modal: true, detail: `This will remove ${path.basename(target)} from the workspace.` },
+      'Delete'
+    );
+
+    if (confirmed !== 'Delete') {
+      return;
+    }
+
+    await fs.rm(target, { recursive: true, force: true });
+    await this.refresh({ announce: false, reason: 'manual' });
+    this.recomputeDerivedState({ statusMessage: `Deleted workspace skill ${skill.name}.` });
+    vscode.window.showInformationMessage(`Deleted workspace skill ${skill.name}.`);
   }
 
   private async performRefresh(options: { announce: boolean; reason: 'startup' | 'manual' }): Promise<void> {
@@ -1185,6 +1218,18 @@ function aggregateSources(skills: SkillRecord[]) {
 
 function createInsightCacheKey(skill: Pick<SkillRecord, 'name' | 'description'>): string {
   return hashText(`${skill.name}\n${skill.description}`);
+}
+
+function resolveWorkspaceSkillDeleteTarget(skill: SkillRecord): string | undefined {
+  const manifestPath = path.resolve(skill.manifestPath);
+  const skillDir = path.dirname(manifestPath);
+  const baseName = path.basename(skillDir).toLowerCase();
+
+  if (baseName === 'skills' || baseName === 'skill') {
+    return manifestPath;
+  }
+
+  return skillDir;
 }
 
 function emptySnapshot(keyConfigured: boolean): SkillSnapshot {

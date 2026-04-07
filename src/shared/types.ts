@@ -18,6 +18,7 @@ export interface SkillRecord {
   manifestPath: string;
   repositoryUrl?: string;
   rawUrl?: string;
+  sourceBranch?: string;
   workspaceFolderName?: string;
   relativePath?: string;
   lastSyncedAt: string;
