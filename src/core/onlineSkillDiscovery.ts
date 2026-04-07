@@ -190,7 +190,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
       signal: controller.signal,
       headers: {
         'Accept': 'application/vnd.github+json',
-        'User-Agent': 'skill-map-vscode-extension'
+        'User-Agent': 'skillmatch-vscode-extension'
       }
     });
   } finally {

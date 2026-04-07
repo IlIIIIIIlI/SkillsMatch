@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import type { SkillRecord } from '../shared/types';
 import { hashText } from './utils';
 
-const KNOWLEDGE_BASE_PREFIX = '/skill-map';
+const KNOWLEDGE_BASE_PREFIX = '/skillmatch';
 const MANIFEST_CHAR_LIMIT = 16_000;
 
 export function buildLightRagWorkspaceId(workspaceFolderIds: readonly string[]): string {
@@ -16,7 +16,7 @@ export function buildKnowledgeBaseFileSource(skill: Pick<SkillRecord, 'id'>): st
 }
 
 export function extractSkillIdFromKnowledgeBaseFileSource(fileSource: string): string | undefined {
-  const match = fileSource.match(/^\/skill-map\/([a-f0-9]+)\.md$/i);
+  const match = fileSource.match(/^\/(?:skillmatch|skill-map)\/([a-f0-9]+)\.md$/i);
   return match?.[1];
 }
 
@@ -32,7 +32,7 @@ export async function loadSkillManifestContent(skill: SkillRecord, timeoutMs: nu
     const response = await fetch(skill.rawUrl ?? skill.manifestPath, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'skill-map-vscode-extension'
+        'User-Agent': 'skillmatch-vscode-extension'
       }
     });
 
@@ -90,5 +90,5 @@ function trimManifest(value: string): string {
     return normalized;
   }
 
-  return `${normalized.slice(0, MANIFEST_CHAR_LIMIT).trimEnd()}\n\n[truncated by Skill Map]`;
+  return `${normalized.slice(0, MANIFEST_CHAR_LIMIT).trimEnd()}\n\n[truncated by SkillMatch]`;
 }

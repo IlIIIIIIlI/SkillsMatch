@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Skill Map (VS Code)",
+      "name": "Run SkillMatch (VS Code)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
@@ -16,7 +16,7 @@
       "preLaunchTask": "npm: compile"
     },
     {
-      "name": "Run Skill Map (Current Editor)",
+      "name": "Run SkillMatch (Current Editor)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",
@@ -30,7 +30,7 @@
       "preLaunchTask": "npm: compile"
     },
     {
-      "name": "Run Skill Map (Watch)",
+      "name": "Run SkillMatch (Watch)",
       "type": "extensionHost",
       "request": "launch",
       "runtimeExecutable": "${execPath}",

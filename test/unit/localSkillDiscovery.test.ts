@@ -7,7 +7,7 @@ import { discoverLocalSkillsFromRoots } from '../../src/core/localSkillDiscovery
 
 suite('localSkillDiscovery', () => {
   test('finds workspace skills under a provided root', async () => {
-    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-map-test-'));
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skillmatch-test-'));
     const skillDir = path.join(workspaceRoot, '.claude', 'skills', 'release-notes');
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(

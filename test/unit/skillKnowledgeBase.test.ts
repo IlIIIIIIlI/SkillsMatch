@@ -35,7 +35,7 @@ suite('skillKnowledgeBase', () => {
 
   test('maps file sources back to skill ids', () => {
     const fileSource = buildKnowledgeBaseFileSource(skill);
-    assert.equal(fileSource, '/skill-map/abcdef123456.md');
+    assert.equal(fileSource, '/skillmatch/abcdef123456.md');
     assert.equal(extractSkillIdFromKnowledgeBaseFileSource(fileSource), skill.id);
   });
 

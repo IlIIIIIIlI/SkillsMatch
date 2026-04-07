@@ -76,7 +76,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
       dashboardPanel = vscode.window.createWebviewPanel(
         'skillMap.dashboard',
-        'Skill Map Dashboard',
+        'SkillMatch Dashboard',
         vscode.ViewColumn.One,
         {
           enableScripts: true,

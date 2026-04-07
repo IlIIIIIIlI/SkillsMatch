@@ -286,7 +286,7 @@ export class SkillCatalogService {
     const task = Promise.resolve(vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: 'Skill Map is generating AI tags',
+        title: 'SkillMatch is generating AI tags',
         cancellable: false
       },
       async (progress) => {
@@ -331,7 +331,7 @@ export class SkillCatalogService {
 
     this.backgroundTagTask = task
       .catch((error: unknown) => {
-        vscode.window.showErrorMessage(`Skill Map failed to generate tags: ${toErrorMessage(error)}`);
+        vscode.window.showErrorMessage(`SkillMatch failed to generate tags: ${toErrorMessage(error)}`);
       })
       .finally(() => {
         this.backgroundTagTask = undefined;
@@ -450,7 +450,7 @@ export class SkillCatalogService {
       path.join(targetRoot, 'selection.json'),
       JSON.stringify({
         generatedAt: new Date().toISOString(),
-        source: 'Skill Map',
+        source: 'SkillMatch',
         question: this.state.recommendation.question,
         skills: selectedSkills.map((skill) => ({
           id: skill.id,
@@ -586,7 +586,7 @@ export class SkillCatalogService {
 
       if (options.announce && options.reason === 'manual') {
         vscode.window.showInformationMessage(
-          `Skill Map refreshed ${skills.length} skills (${localSkills.length} local, ${onlineSkills.length} online).`
+          `SkillMatch refreshed ${skills.length} skills (${localSkills.length} local, ${onlineSkills.length} online).`
         );
       }
 
@@ -598,7 +598,7 @@ export class SkillCatalogService {
         void this.syncKnowledgeBase({ announce: false });
       }
     } catch (error) {
-      const message = `Skill Map refresh failed: ${toErrorMessage(error)}`;
+      const message = `SkillMatch refresh failed: ${toErrorMessage(error)}`;
       this.recomputeDerivedState({ statusMessage: message });
       vscode.window.showErrorMessage(message);
     } finally {
@@ -952,7 +952,7 @@ export class SkillCatalogService {
       lightRagBaseUrl: config.get<string>('lightRag.baseUrl', 'http://127.0.0.1:9621'),
       lightRagAutoSyncOnRefresh: config.get<boolean>('lightRag.autoSyncOnRefresh', true),
       lightRagSyncTimeoutMs: config.get<number>('lightRag.syncTimeoutMs', 120000),
-      projectApplyRelativePath: config.get<string>('project.applyRelativePath', '.codex/skills/skill-map-curated')
+      projectApplyRelativePath: config.get<string>('project.applyRelativePath', '.codex/skills/skillmatch-curated')
     };
   }
 
@@ -1076,7 +1076,7 @@ function emptyViewState(): ViewState {
     },
     projectConfig: {
       workspaces: [],
-      applyRelativePath: '.codex/skills/skill-map-curated'
+      applyRelativePath: '.codex/skills/skillmatch-curated'
     },
     busy: false
   };

@@ -1,6 +1,6 @@
-# Skill Map
+# SkillMatch
 
-Skill Map is a VS Code sidebar extension that discovers local, workspace, and online agent skills, classifies them from their descriptions, indexes them into LightRAG, and recommends the right skills for the current project.
+SkillMatch is a VS Code sidebar extension that discovers local, workspace, and online agent skills, classifies them from their descriptions, indexes them into LightRAG, and recommends the right skills for the current project.
 
 ## What It Does
 
@@ -16,9 +16,9 @@ Skill Map is a VS Code sidebar extension that discovers local, workspace, and on
 
 ## Views
 
-- `Skill Map / Explorer`
+- `SkillMatch / Explorer`
   - Tree view for `All Skills`, `Categories`, `Workspace`, `Global`, and `Online`.
-- `Skill Map / Overview`
+- `SkillMatch / Overview`
   - Prominent OpenRouter configuration card
   - LightRAG sync status and manual sync controls
   - GitHub link configuration for online skills
@@ -45,14 +45,14 @@ Settings:
 
 Commands:
 
-- `Skill Map: Configure OpenRouter API Key`
-- `Skill Map: Open OpenRouter Settings`
-- `Skill Map: Clear OpenRouter API Key`
-- `Skill Map: Generate AI Tags`
-- `Skill Map: Configure LightRAG Base URL`
-- `Skill Map: Configure GitHub Skill Sources`
-- `Skill Map: Sync LightRAG Knowledge Base`
-- `Skill Map: Apply Recommended Skills To Project`
+- `SkillMatch: Configure OpenRouter API Key`
+- `SkillMatch: Open OpenRouter Settings`
+- `SkillMatch: Clear OpenRouter API Key`
+- `SkillMatch: Generate AI Tags`
+- `SkillMatch: Configure LightRAG Base URL`
+- `SkillMatch: Configure GitHub Skill Sources`
+- `SkillMatch: Sync LightRAG Knowledge Base`
+- `SkillMatch: Apply Recommended Skills To Project`
 
 ## Development
 
@@ -74,7 +74,7 @@ For interactive development:
 npm run watch
 ```
 
-Then launch `Run Skill Map` from the VS Code debugger.
+Then launch `Run SkillMatch` from the VS Code debugger.
 
 To force a clean Visual Studio Code development host from the terminal:
 

@@ -37,7 +37,7 @@ export class OpenRouterClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'HTTP-Referer': 'https://github.com',
-      'X-Title': 'Skill Map'
+      'X-Title': 'SkillMatch'
     };
 
     if (input.apiKey) {
@@ -100,7 +100,7 @@ export class OpenRouterClient {
         'Authorization': `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://github.com',
-        'X-Title': 'Skill Map'
+        'X-Title': 'SkillMatch'
       },
       body: JSON.stringify({
         model: this.config.model,
@@ -176,7 +176,7 @@ export class OpenRouterClient {
         'Authorization': `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://github.com',
-        'X-Title': 'Skill Map'
+        'X-Title': 'SkillMatch'
       },
       body: JSON.stringify({
         model: this.config.model,

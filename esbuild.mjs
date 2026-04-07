@@ -8,7 +8,7 @@ const watch = process.argv.includes('--watch');
  */
 function problemMatcherPlugin() {
   return {
-    name: 'skill-map-problem-matcher',
+    name: 'skillmatch-problem-matcher',
     setup(build) {
       build.onStart(() => {
         console.log(`[watch] ${build.initialOptions.outfile ?? build.initialOptions.outdir ?? 'build'} started`);

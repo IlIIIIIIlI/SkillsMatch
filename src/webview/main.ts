@@ -45,7 +45,7 @@ interface SkillNode3D extends SkillGraphNodeBase {
 
 const vscode = acquireVsCodeApi();
 const rootElement = document.getElementById('app');
-if (!rootElement) throw new Error('Skill Map webview root was not found.');
+if (!rootElement) throw new Error('SkillMatch webview root was not found.');
 const app = rootElement as HTMLDivElement;
 
 const bootState = (() => {
@@ -161,7 +161,7 @@ render();
 function render(): void {
   const s = state;
   if (!s) {
-    app.innerHTML = '<div style="padding:24px;opacity:0.6;font-size:12px;">Waiting for Skill Map…</div>';
+    app.innerHTML = '<div style="padding:24px;opacity:0.6;font-size:12px;">Waiting for SkillMatch…</div>';
     return;
   }
 
@@ -327,7 +327,7 @@ function render(): void {
 
   app.innerHTML = `
 <nav class="topbar">
-  <span class="topbar-title">${isDashboard ? 'Skill Map Dashboard' : 'Skill Map'}</span>
+  <span class="topbar-title">${isDashboard ? 'SkillMatch Dashboard' : 'SkillMatch'}</span>
   <div class="scope-tabs">${scopeTabsHtml}</div>
   <div class="topbar-sep"></div>
   <input id="skill-search" class="topbar-search" type="search" placeholder="Search skills…" value="${escapeAttribute(searchDraft)}" />
@@ -411,7 +411,7 @@ function render(): void {
   <div class="recommend-head">
     <div>
       <span class="pane-title">Skill Match</span>
-      <p class="recommend-copy">Ask in natural language. Skill Map queries LightRAG, then uses your OpenRouter model to rank the best skills.</p>
+      <p class="recommend-copy">Ask in natural language. SkillMatch queries LightRAG, then uses your OpenRouter model to rank the best skills.</p>
     </div>
     <span class="pill">${escapeHtml(s.recommendation.source)}</span>
   </div>

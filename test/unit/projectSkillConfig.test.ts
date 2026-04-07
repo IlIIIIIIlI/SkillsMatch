@@ -4,8 +4,8 @@ import { buildAppliedSkillDirectoryName, resolveProjectApplyPath } from '../../s
 
 suite('projectSkillConfig', () => {
   test('resolves a managed path inside the workspace', () => {
-    const target = resolveProjectApplyPath('/workspace/app', '.codex/skills/skill-map-curated');
-    assert.equal(target, '/workspace/app/.codex/skills/skill-map-curated');
+    const target = resolveProjectApplyPath('/workspace/app', '.codex/skills/skillmatch-curated');
+    assert.equal(target, '/workspace/app/.codex/skills/skillmatch-curated');
   });
 
   test('rejects workspace root as the target path', () => {

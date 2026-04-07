@@ -116,7 +116,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
       content="default-src 'none'; img-src ${this.webview.cspSource} https: data: blob:; style-src ${this.webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; worker-src blob:; connect-src blob:;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Skill Map Overview</title>
+    <title>SkillMatch Overview</title>
     <style>
       :root {
         color-scheme: light dark;
