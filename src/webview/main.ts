@@ -1,6 +1,5 @@
 import {
   forceCenter,
-  forceCollide,
   forceLink,
   forceManyBody,
   forceSimulation,
@@ -10,7 +9,7 @@ import {
 import * as THREE from 'three';
 
 import { applyCategoryFilter, applyScopeFilter } from '../shared/filterState';
-import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, TagGraphLink, TagGraphNode, ViewState, WebviewToExtensionMessage } from '../shared/types';
+import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, ViewState, WebviewToExtensionMessage } from '../shared/types';
 
 declare function acquireVsCodeApi(): {
   postMessage(message: WebviewToExtensionMessage): void;
@@ -18,8 +17,31 @@ declare function acquireVsCodeApi(): {
   getState(): unknown;
 };
 
-type GraphNode = TagGraphNode & SimulationNodeDatum & { radius: number; vx?: number; vy?: number };
-type GraphLink = TagGraphLink & SimulationLinkDatum<GraphNode>;
+interface SkillGraphNodeBase {
+  id: string;
+  name: string;
+  category: string;
+  tagCount: number;
+}
+
+type SkillNode2D = SkillGraphNodeBase & SimulationNodeDatum & {
+  radius: number;
+  vx?: number;
+  vy?: number;
+};
+
+interface SkillLink {
+  sourceId: string;
+  targetId: string;
+  sharedTags: number;
+  weight: number;
+}
+
+type GraphLink2D = SkillLink & SimulationLinkDatum<SkillNode2D>;
+
+interface SkillNode3D extends SkillGraphNodeBase {
+  radius: number;
+}
 
 const vscode = acquireVsCodeApi();
 const rootElement = document.getElementById('app');
@@ -39,6 +61,7 @@ let searchText = '';
 let searchDraft = '';
 let questionDraft = '';
 let selectedTag: string | undefined;
+let focusedNodeId: string | undefined; // 2D/3D: skill id
 let expandedSkillId: string | undefined;
 let skillSearchTimer: number | undefined;
 let graphMode: '2d' | '3d' = '2d';
@@ -46,14 +69,32 @@ let settingsOpen = false;
 let showSelectedOnly = false;
 let searchIsComposing = false;
 let questionIsComposing = false;
+let graphPaneRatio = 0.58;
+let dashboardTopHeightPx: number | undefined;
+let pendingSelectionEchoKey: string | null = null;
+let svgZoomScale = 1;
+let graphMinSharedTags = 1;
+let graphSpreadScale = 1.32;
+
+interface SplitterDragState {
+  type: 'horizontal' | 'vertical';
+  startX: number;
+  startY: number;
+  startValue: number;
+  containerSize: number;
+}
+
+let activeSplitterDrag: SplitterDragState | undefined;
 
 // Live D3 simulation state
-let simulation: ReturnType<typeof forceSimulation<GraphNode>> | null = null;
-let liveNodes: GraphNode[] = [];
-let liveLinks: GraphLink[] = [];
-let dragNode: GraphNode | null = null;
+let simulation: ReturnType<typeof forceSimulation<SkillNode2D>> | null = null;
+let liveNodes: SkillNode2D[] = [];
+let liveLinks: GraphLink2D[] = [];
+let dragNode: SkillNode2D | null = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
+let svgMouseDownNode: SkillNode2D | null = null;
+let svgMouseDownPos: { x: number; y: number } | null = null;
 let svgWidth = 0;
 let svgHeight = 0;
 // Three.js sphere state
@@ -61,28 +102,54 @@ let threeRenderer: THREE.WebGLRenderer | null = null;
 let threeScene: THREE.Scene | null = null;
 let threeCamera: THREE.PerspectiveCamera | null = null;
 let threeAnimFrame: number | null = null;
-let threeNodeMeshes: Array<{ mesh: THREE.Mesh; label: string }> = [];
+let threeNodeMeshes: Array<{ mesh: THREE.Mesh; skillId: string }> = [];
+let applyThreeFocus: ((focusId?: string) => void) | null = null;
+let threeResizeObserver: ResizeObserver | null = null;
 let sphereIsDragging = false;
 let sphereDragStart = { x: 0, y: 0 };
 let sphereRotation = { x: 0.3, y: 0 };
 let sphereAutoRotate = true;
 
+// Skill-based 3D graph data (rebuilt alongside liveNodes/liveLinks)
+let liveSkillNodes: SkillNode3D[] = [];
+let liveSkillLinks: SkillLink[] = [];
+let liveSkillPositions3D = new Map<string, THREE.Vector3>();
+
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
   const message = event.data;
   if (message.type === 'state') {
+    const previousState = state;
     if (!questionDraft && message.state.recommendation.question) {
       questionDraft = message.state.recommendation.question;
     }
+    if (
+      previousState &&
+      (
+        previousState.filter.scope !== message.state.filter.scope ||
+        previousState.filter.category !== message.state.filter.category ||
+        previousState.filter.sourceId !== message.state.filter.sourceId
+      )
+    ) {
+      selectedTag = undefined;
+      focusedNodeId = undefined;
+    }
     state = message.state;
     vscode.setState(state);
+    if (isSelectionEchoState(previousState, message.state)) {
+      pendingSelectionEchoKey = null;
+      refreshGraphFocusVisibility();
+      updateSkillListOnly();
+      return;
+    }
+    pendingSelectionEchoKey = null;
     rebuildGraph();
     render();
   }
 });
 
 vscode.postMessage({ type: 'ready' });
-render();
 rebuildGraph();
+render();
 
 // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -95,14 +162,13 @@ function render(): void {
 
   const focusedInput = captureFocusedInput();
   const selectedSkillIds = new Set(s.recommendation.selectedSkillIds);
-  const visibleSkills = applySelectionListTransform(
-    applyLocalFilters(s.visibleSkills, searchText, selectedTag),
-    selectedSkillIds,
-    showSelectedOnly
-  );
+  const visibleSkills = getDisplaySkills(s);
+  const graphStats = buildSkillOverlapGraph(getBaseVisibleSkills(s));
+  const graphMaxSharedTags = Math.max(1, graphStats.maxSharedTags);
+  graphMinSharedTags = clamp(graphMinSharedTags, 1, graphMaxSharedTags);
   const selectedSkill =
-    s.snapshot.skills.find((sk) => sk.id === s.selectedSkillId) ??
     visibleSkills.find((sk) => sk.id === s.selectedSkillId) ??
+    s.snapshot.skills.find((sk) => sk.id === s.selectedSkillId) ??
     visibleSkills[0] ??
     s.visibleSkills[0];
 
@@ -252,7 +318,11 @@ function render(): void {
   </div>
 </nav>
 
-<div class="above-fold">
+<div
+  class="dashboard-layout ${isDashboard ? 'is-dashboard' : ''}"
+  style="${isDashboard ? `${dashboardTopHeightPx ? `--dashboard-top-height:${dashboardTopHeightPx}px;` : ''} --graph-pane-width:${(graphPaneRatio * 100).toFixed(1)}%;` : ''}"
+>
+<div class="above-fold" id="above-fold">
 <section class="control-deck">
   <article class="setup-card setup-card-emphasis">
     <div class="setup-kicker">OpenRouter</div>
@@ -331,22 +401,54 @@ function render(): void {
   ${tagFilterBadge}
 </div>
 </div>
+${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize top panels"></div>' : ''}
 
-<div class="main">
+<div class="main ${isDashboard ? 'is-dashboard' : ''}" id="main-layout">
   <div class="graph-pane">
     <div class="pane-header">
-      <span class="pane-title">Tag Overlap · ${visibleSkills.length} skills</span>
+      <div class="graph-header-meta">
+        <span class="pane-title">Skill Overlap · ${visibleSkills.length} skills</span>
+        <div class="graph-tuning">
+          <label class="graph-control" title="Only connect skills that share at least this many tags">
+            <span class="graph-control-label">Shared ≥</span>
+            <input
+              id="graph-shared-threshold"
+              class="graph-range"
+              type="range"
+              min="1"
+              max="${graphMaxSharedTags}"
+              step="1"
+              value="${graphMinSharedTags}"
+            />
+            <span id="graph-shared-threshold-value" class="graph-control-value">${graphMinSharedTags}</span>
+          </label>
+          <label class="graph-control" title="Spread linked skill balls farther apart or let them overlap more">
+            <span class="graph-control-label">Spread</span>
+            <input
+              id="graph-spread-range"
+              class="graph-range"
+              type="range"
+              min="85"
+              max="185"
+              step="5"
+              value="${Math.round(graphSpreadScale * 100)}"
+            />
+            <span id="graph-spread-range-value" class="graph-control-value">${Math.round(graphSpreadScale * 100)}%</span>
+          </label>
+        </div>
+      </div>
       <div class="view-toggle">
         <button class="view-btn ${graphMode === '2d' ? 'active' : ''}" data-action="graph-mode" data-mode="2d">2D</button>
         <button class="view-btn ${graphMode === '3d' ? 'active' : ''}" data-action="graph-mode" data-mode="3d">3D</button>
       </div>
     </div>
     <div class="graph-wrap" id="graph-wrap">
-      <svg id="tag-graph" viewBox="0 0 720 480" role="img" aria-label="Skill tag overlap graph" style="${graphMode === '3d' ? 'display:none' : ''}"></svg>
+      <svg id="tag-graph" viewBox="0 0 720 480" role="img" aria-label="Skill overlap graph" style="${graphMode === '3d' ? 'display:none' : ''}"></svg>
       <div id="tag-graph-3d" style="${graphMode === '3d' ? 'display:block' : 'display:none'}"></div>
-      <span class="graph-hint">${graphMode === '2d' ? 'Drag nodes · Click to filter' : 'Drag to rotate · Scroll to zoom · Click to filter'}</span>
+      <span class="graph-hint">${graphMode === '2d' ? 'Each ball = skill · Overlap = shared tags · Color = category · Drag nodes · Scroll to zoom · Click to focus · Double-click to reset' : 'Each ball = skill · Overlap = shared tags · Color = category · Drag to rotate · Scroll to zoom · Click to focus · Double-click to reset'}</span>
     </div>
   </div>
+  ${isDashboard ? '<div id="dashboard-main-splitter" class="layout-splitter horizontal" title="Drag to resize graph and skills"></div>' : ''}
 
   <div class="right-pane">
     <div class="pane-header">
@@ -357,12 +459,13 @@ function render(): void {
         <button class="btn compact" data-action="apply-recommended-skills" ${selectedRecommendationCount === 0 ? 'disabled' : ''}>Apply</button>
       </div>
     </div>
-    <div class="selected-strip">${selectedSkillStripHtml}</div>
+  <div class="selected-strip">${selectedSkillStripHtml}</div>
     <div class="skill-list-wrap">${skillCardsHtml}</div>
   </div>
 </div>`;
 
   bindDomEvents();
+  bindResizableLayout();
   restoreFocusedInput(focusedInput);
 
   if (graphMode === '2d') {
@@ -370,58 +473,243 @@ function render(): void {
   } else {
     renderSphere(visibleSkills);
   }
+
+  if (focusedNodeId && selectedSkill?.id) {
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollToSkillCard(selectedSkill.id)));
+  }
 }
 
 // ── Graph: live D3 simulation ────────────────────────────────────────────────
 
+function buildSkillOverlapGraph(skills: SkillRecord[]): { skills: SkillRecord[]; links: SkillLink[]; maxSharedTags: number } {
+  const MAX_GRAPH_SKILLS = 120;
+  const priorityIds = new Set<string>(
+    [focusedNodeId, state?.selectedSkillId].filter((value): value is string => Boolean(value))
+  );
+  const graphSkills = [...skills]
+    .filter((skill) => skill.tags.length > 0)
+    .sort((left, right) => {
+      const leftPriority = priorityIds.has(left.id) ? 1 : 0;
+      const rightPriority = priorityIds.has(right.id) ? 1 : 0;
+      return rightPriority - leftPriority || right.tags.length - left.tags.length || left.name.localeCompare(right.name);
+    })
+    .slice(0, MAX_GRAPH_SKILLS);
+
+  const tagToSkillIdx = new Map<string, number[]>();
+  graphSkills.forEach((skill, index) => {
+    for (const tag of skill.tags) {
+      if (!tagToSkillIdx.has(tag)) tagToSkillIdx.set(tag, []);
+      tagToSkillIdx.get(tag)!.push(index);
+    }
+  });
+
+  const pairShared = new Map<string, number>();
+  for (const indices of tagToSkillIdx.values()) {
+    for (let leftIndex = 0; leftIndex < indices.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < indices.length; rightIndex += 1) {
+        const key = `${indices[leftIndex]}|${indices[rightIndex]}`;
+        pairShared.set(key, (pairShared.get(key) ?? 0) + 1);
+      }
+    }
+  }
+
+  const connectedSkillIdx = new Set<number>();
+  const links: SkillLink[] = [];
+  let maxSharedTags = 0;
+  for (const [key, sharedTags] of pairShared) {
+    const [leftIndex, rightIndex] = key.split('|').map(Number);
+    const leftSkill = graphSkills[leftIndex];
+    const rightSkill = graphSkills[rightIndex];
+    if (!leftSkill || !rightSkill || sharedTags <= 0) continue;
+    maxSharedTags = Math.max(maxSharedTags, sharedTags);
+    if (sharedTags < graphMinSharedTags) continue;
+
+    connectedSkillIdx.add(leftIndex);
+    connectedSkillIdx.add(rightIndex);
+    links.push({
+      sourceId: leftSkill.id,
+      targetId: rightSkill.id,
+      sharedTags,
+      weight: sharedTags / Math.max(1, Math.min(leftSkill.tags.length, rightSkill.tags.length))
+    });
+  }
+
+  const overlappingSkills = graphSkills.filter((_, index) => connectedSkillIdx.has(index));
+  const overlappingIds = new Set(overlappingSkills.map((skill) => skill.id));
+
+  return {
+    skills: overlappingSkills,
+    links: links.filter((link) => overlappingIds.has(link.sourceId) && overlappingIds.has(link.targetId)),
+    maxSharedTags
+  };
+}
+
+function computeSkillLayout3D(skillNodes: SkillNode3D[], skillLinks: SkillLink[]): Map<string, THREE.Vector3> {
+  if (skillNodes.length === 0) {
+    return new Map();
+  }
+
+  const n = skillNodes.length;
+  const maxNodeR = Math.max(...skillNodes.map((node) => node.radius), 0.1);
+  const sphereRadius = Math.max(2.4, maxNodeR * 2.2 * Math.sqrt(n) / (2 * Math.sqrt(Math.PI)) * graphSpreadScale);
+  const positions = skillNodes.map((_, index) => {
+    const phi = Math.acos(1 - (2 * (index + 0.5)) / n);
+    const theta = Math.PI * (1 + Math.sqrt(5)) * index;
+    return new THREE.Vector3(
+      sphereRadius * Math.sin(phi) * Math.cos(theta),
+      sphereRadius * Math.cos(phi),
+      sphereRadius * Math.sin(phi) * Math.sin(theta)
+    );
+  });
+  const idxById = new Map<string, number>(skillNodes.map((node, index) => [node.id, index]));
+  const maxSharedTags = Math.max(...skillLinks.map((link) => link.sharedTags), 1);
+  const velocity = skillNodes.map(() => new THREE.Vector3());
+
+  for (let iter = 0; iter < 72; iter += 1) {
+    const alpha = 1 - iter / 72;
+
+    for (let leftIndex = 0; leftIndex < n; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < n; rightIndex += 1) {
+        const diff = positions[leftIndex].clone().sub(positions[rightIndex]);
+        const distance = Math.max(diff.length(), 0.001);
+        const combinedRadius = skillNodes[leftIndex].radius + skillNodes[rightIndex].radius;
+        const repulsion = (combinedRadius * combinedRadius) / (distance * distance) * (0.05 + (graphSpreadScale - 1) * 0.03) * alpha;
+        velocity[leftIndex].addScaledVector(diff.normalize(), repulsion);
+        velocity[rightIndex].addScaledVector(diff.normalize(), -repulsion);
+      }
+    }
+
+    for (const link of skillLinks) {
+      const leftIndex = idxById.get(link.sourceId);
+      const rightIndex = idxById.get(link.targetId);
+      if (leftIndex === undefined || rightIndex === undefined) continue;
+
+      const diff = positions[rightIndex].clone().sub(positions[leftIndex]);
+      const distance = Math.max(diff.length(), 0.001);
+      const combinedRadius = skillNodes[leftIndex].radius + skillNodes[rightIndex].radius;
+      const overlapFraction = link.sharedTags / maxSharedTags;
+      const targetDistance = combinedRadius * (0.54 + (1 - overlapFraction) * 0.18) * graphSpreadScale;
+      const stretch = (distance - targetDistance) / distance;
+      const force = stretch * 0.14 * alpha;
+      velocity[leftIndex].addScaledVector(diff.normalize(), force);
+      velocity[rightIndex].addScaledVector(diff.normalize(), -force);
+    }
+
+    for (let index = 0; index < n; index += 1) {
+      positions[index].add(velocity[index]);
+      velocity[index].multiplyScalar(0.64);
+    }
+  }
+
+  return new Map(skillNodes.map((node, index) => [node.id, positions[index]]));
+}
+
+function buildLinkedSkillIdSet(skillId: string): Set<string> {
+  const ids = new Set<string>([skillId]);
+  for (const link of liveSkillLinks) {
+    if (link.sourceId === skillId) ids.add(link.targetId);
+    else if (link.targetId === skillId) ids.add(link.sourceId);
+  }
+  return ids;
+}
+
+function getOverlappingSkillIds2D(skillId: string): Set<string> | null {
+  if (!liveNodes.some((node) => node.id === skillId)) {
+    return null;
+  }
+  return buildLinkedSkillIdSet(skillId);
+}
+
+function getOverlappingSkillIds3D(skillId: string): Set<string> | null {
+  if (!liveSkillNodes.some((node) => node.id === skillId)) {
+    return null;
+  }
+  return buildLinkedSkillIdSet(skillId);
+}
+
 function rebuildGraph(): void {
   if (!state) return;
 
-  const visibleSkills = applySelectionListTransform(
-    applyLocalFilters(state.visibleSkills, searchText, selectedTag),
-    new Set(state.recommendation.selectedSkillIds),
-    showSelectedOnly
-  );
-  const graph = filterGraphForVisible(state, visibleSkills);
+  const visibleSkills = getBaseVisibleSkills(state);
+  let graph = buildSkillOverlapGraph(visibleSkills);
+  const maxAllowedSharedTags = Math.max(graph.maxSharedTags, 1);
+  const nextSharedThreshold = clamp(graphMinSharedTags, 1, maxAllowedSharedTags);
+  if (nextSharedThreshold !== graphMinSharedTags) {
+    graphMinSharedTags = nextSharedThreshold;
+    graph = buildSkillOverlapGraph(visibleSkills);
+  }
 
   if (simulation) {
     simulation.stop();
     simulation = null;
   }
 
-  const nodeCount = graph.nodes.length;
-  // Scale radius down as node count grows so the graph stays readable
-  const baseR = nodeCount > 30 ? 6 : nodeCount > 15 ? 8 : 10;
-  const scaleR = nodeCount > 30 ? 4 : nodeCount > 15 ? 6 : 8;
-  liveNodes = graph.nodes.map((n) => ({
-    ...n,
-    radius: baseR + Math.sqrt(n.count) * scaleR,
-    x: undefined,
-    y: undefined
+  const previousNodesById = new Map(liveNodes.map((node) => [node.id, node]));
+  const nodeCount = graph.skills.length;
+  const maxTagCount = Math.max(...graph.skills.map((skill) => skill.tags.length), 1);
+  const baseR = nodeCount > 60 ? 12 : nodeCount > 30 ? 14 : nodeCount > 15 ? 17 : 20;
+  const scaleR = nodeCount > 60 ? 6 : nodeCount > 30 ? 8 : nodeCount > 15 ? 10 : 12;
+  liveNodes = graph.skills.map((skill) => {
+    const previous = previousNodesById.get(skill.id);
+    return {
+      id: skill.id,
+      name: skill.name,
+      category: skill.category,
+      tagCount: skill.tags.length,
+      radius: baseR + Math.sqrt(skill.tags.length / maxTagCount) * scaleR,
+      x: previous?.x,
+      y: previous?.y,
+      vx: previous?.vx,
+      vy: previous?.vy
+    };
+  });
+  liveLinks = graph.links.map((link) => ({
+    ...link,
+    source: link.sourceId,
+    target: link.targetId
   }));
-  liveLinks = graph.links.map((l) => ({ ...l }));
 
-  if (liveNodes.length === 0) return;
+  if (liveNodes.length > 0) {
+    const maxSharedTags2D = Math.max(graph.maxSharedTags, 1);
+    simulation = forceSimulation(liveNodes)
+      .force('center', forceCenter(360, 240))
+      .force('charge', forceManyBody<SkillNode2D>().strength((node: SkillNode2D) => -34 - node.radius * 1.25 * graphSpreadScale))
+      .force(
+        'link',
+        forceLink<SkillNode2D, GraphLink2D>(liveLinks)
+          .id((node: SkillNode2D) => node.id)
+          .distance((link: GraphLink2D) => {
+            const source = link.source as SkillNode2D;
+            const target = link.target as SkillNode2D;
+            const overlapFraction = link.sharedTags / maxSharedTags2D;
+            return (source.radius + target.radius) * (0.54 + (1 - overlapFraction) * 0.18) * graphSpreadScale;
+          })
+          .strength((link: GraphLink2D) => Math.min(0.85, 0.18 + link.weight * 0.45))
+      )
+      .velocityDecay(0.42)
+      .alphaDecay(0.04)
+      .on('tick', () => {
+        if (graphMode === '2d') drawSvgFrame();
+      });
+  }
 
-  simulation = forceSimulation(liveNodes)
-    .force('center', forceCenter(360, 240))
-    .force('charge', forceManyBody<GraphNode>().strength((n: GraphNode) => -30 - n.radius * 2))
-    .force('collide', forceCollide<GraphNode>().radius((n: GraphNode) => n.radius + 3).strength(0.7))
-    .force(
-      'link',
-      forceLink<GraphNode, GraphLink>(liveLinks)
-        .id((n: GraphNode) => n.id)
-        .distance((l: GraphLink) => {
-          const s = l.source as GraphNode;
-          const t = l.target as GraphNode;
-          return Math.max(s.radius + t.radius + 4, 60 - l.overlap * 3);
-        })
-        .strength((l: GraphLink) => Math.min(0.8, 0.05 + l.weight * 0.4))
-    )
-    .alphaDecay(0.025)
-    .on('tick', () => {
-      if (graphMode === '2d') drawSvgFrame();
-    });
+  const n3d = graph.skills.length;
+  const maxR3d = n3d > 60 ? 0.22 : n3d > 30 ? 0.30 : n3d > 15 ? 0.38 : 0.48;
+  const minR3d = n3d > 60 ? 0.08 : n3d > 30 ? 0.11 : n3d > 15 ? 0.14 : 0.18;
+
+  liveSkillLinks = graph.links.map((link) => ({ ...link }));
+  liveSkillNodes = graph.skills.map((skill) => ({
+    id: skill.id,
+    name: skill.name,
+    category: skill.category,
+    tagCount: skill.tags.length,
+    radius: minR3d + (skill.tags.length / maxTagCount) * (maxR3d - minR3d)
+  }));
+  liveSkillPositions3D = computeSkillLayout3D(liveSkillNodes, liveSkillLinks);
+
+  if (focusedNodeId && !liveNodes.some((node) => node.id === focusedNodeId)) {
+    focusedNodeId = undefined;
+  }
 }
 
 function attachSvgToSimulation(): void {
@@ -433,7 +721,7 @@ function attachSvgToSimulation(): void {
   svgHeight = rect.height || 480;
 
   if (liveNodes.length === 0) {
-    svg.innerHTML = `<text x="${svgWidth / 2}" y="${svgHeight / 2}" text-anchor="middle" fill="currentColor" opacity="0.5" font-size="12">No tags for current filter.</text>`;
+    svg.innerHTML = `<text x="${svgWidth / 2}" y="${svgHeight / 2}" text-anchor="middle" fill="currentColor" opacity="0.5" font-size="12">No overlapping skills for current filter.</text>`;
     return;
   }
 
@@ -445,6 +733,7 @@ function attachSvgToSimulation(): void {
   svg.addEventListener('mousemove', onSvgMouseMove);
   svg.addEventListener('mouseup', onSvgMouseUp);
   svg.addEventListener('mouseleave', onSvgMouseUp);
+  svg.addEventListener('wheel', onSvgWheel, { passive: false });
 }
 
 function drawSvgFrame(): void {
@@ -454,58 +743,53 @@ function drawSvgFrame(): void {
   const W = 720;
   const H = 480;
 
-  const linkMarkup = liveLinks.map((l) => {
-    const s = l.source as GraphNode;
-    const t = l.target as GraphNode;
-    const sx = clamp(s.x ?? W / 2, 0, W);
-    const sy = clamp(s.y ?? H / 2, 0, H);
-    const tx = clamp(t.x ?? W / 2, 0, W);
-    const ty = clamp(t.y ?? H / 2, 0, H);
-    const opacity = Math.min(0.5, 0.12 + l.weight * 0.38);
-    const width = 0.8 + l.overlap * 0.6;
-    return `<line x1="${sx}" y1="${sy}" x2="${tx}" y2="${ty}" stroke="var(--vscode-textLink-foreground)" stroke-opacity="${opacity}" stroke-width="${width}"/>`;
-  }).join('');
+  const visibleNodeIds = focusedNodeId ? getOverlappingSkillIds2D(focusedNodeId) : null;
+  const zoomTransform = svgZoomScale === 1
+    ? ''
+    : `translate(${W / 2} ${H / 2}) scale(${svgZoomScale}) translate(${-W / 2} ${-H / 2})`;
 
   const nodeMarkup = liveNodes.map((n) => {
+    if (visibleNodeIds && !visibleNodeIds.has(n.id)) return '';
     const nx = clamp(n.x ?? W / 2, n.radius, W - n.radius);
     const ny = clamp(n.y ?? H / 2, n.radius, H - n.radius);
     const fill = categoryColor(n.category);
-    const isHighlighted = selectedTag === n.label;
-    const isDimmed = selectedTag !== undefined && !isHighlighted;
-    const fontSize = Math.max(9, Math.min(13, n.radius / 2.2));
-    const showLabel = n.radius > 20;
-    return `<g class="graph-node" data-tag="${escapeAttribute(n.label)}" style="cursor:pointer;opacity:${isDimmed ? 0.2 : 1}">
-  <circle cx="${nx}" cy="${ny}" r="${n.radius}" fill="${fill}" fill-opacity="${isHighlighted ? 0.95 : 0.7}" stroke="${fill}" stroke-width="${isHighlighted ? 2.5 : 1.5}"/>
-  ${showLabel ? `<text x="${nx}" y="${ny + 4}" text-anchor="middle" fill="currentColor" font-size="${fontSize}" pointer-events="none" font-weight="${isHighlighted ? '600' : '400'}">${escapeHtml(truncate(n.label, 16))}</text>` : ''}
-  <title>${escapeHtml(n.label)} · ${n.count} skills</title>
+    const isHighlighted = n.id === focusedNodeId;
+    const r = n.radius;
+    const fontSize = Math.max(9, Math.min(12, r * 0.7));
+    const labelY = ny - r - 4;
+    return `<g class="graph-node" data-skill-id="${escapeAttribute(n.id)}" style="cursor:pointer">
+  <circle cx="${nx}" cy="${ny}" r="${r}" fill="${fill}" fill-opacity="${isHighlighted ? 0.92 : 0.55}" stroke="${fill}" stroke-width="${isHighlighted ? 2.5 : 1}" stroke-opacity="0.9"/>
+  <text x="${nx}" y="${labelY}" text-anchor="middle" fill="currentColor" font-size="${fontSize}" pointer-events="none" font-weight="${isHighlighted ? '700' : '400'}" opacity="${isHighlighted ? 1 : 0.8}">${escapeHtml(truncate(n.name, 18))}</text>
+  <title>${escapeHtml(n.name)} · ${n.tagCount} tags</title>
 </g>`;
   }).join('');
 
-  svg.innerHTML = `<g class="links">${linkMarkup}</g><g class="nodes">${nodeMarkup}</g>`;
+  svg.innerHTML = `<g class="nodes" transform="${zoomTransform}">${nodeMarkup}</g>`;
 
-  // Re-bind click events
+  // Re-bind click / dblclick / drag events
   svg.querySelectorAll<SVGGElement>('.graph-node').forEach((g) => {
-    g.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const tag = g.dataset.tag;
-      if (!tag) return;
-      selectedTag = selectedTag === tag ? undefined : tag;
-      rebuildGraph();
-      render();
-    });
     g.addEventListener('mousedown', (e) => {
       e.preventDefault();
-      const tag = g.dataset.tag;
-      const node = liveNodes.find((n) => n.label === tag);
+      const skillId = g.dataset.skillId;
+      const node = liveNodes.find((n) => n.id === skillId);
       if (!node || !simulation) return;
-      dragNode = node;
-      simulation.alphaTarget(0.3).restart();
+
       const svgEl = document.getElementById('tag-graph') as unknown as SVGSVGElement;
-      const pt = svgPoint(svgEl, e.clientX, e.clientY);
+      const pt = svgGraphPoint(svgEl, e.clientX, e.clientY);
       dragOffsetX = (node.x ?? 0) - pt.x;
       dragOffsetY = (node.y ?? 0) - pt.y;
       node.fx = node.x;
       node.fy = node.y;
+      svgMouseDownNode = node;
+      svgMouseDownPos = { x: e.clientX, y: e.clientY };
+      // Don't set dragNode yet — wait until actual movement in onSvgMouseMove
+    });
+
+    g.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      focusedNodeId = undefined;
+      drawSvgFrame();
+      updateSkillListOnly();
     });
   });
 }
@@ -513,19 +797,55 @@ function drawSvgFrame(): void {
 function onSvgMouseDown(_e: MouseEvent): void { /* handled per-node */ }
 
 function onSvgMouseMove(e: MouseEvent): void {
-  if (!dragNode || !simulation) return;
+  if (!svgMouseDownNode || !simulation) return;
+  const moved = svgMouseDownPos
+    ? Math.abs(e.clientX - svgMouseDownPos.x) + Math.abs(e.clientY - svgMouseDownPos.y)
+    : 999;
+  if (moved > 4 && !dragNode) {
+    dragNode = svgMouseDownNode;
+    simulation.alphaTarget(0.3).restart();
+  }
+  if (!dragNode) return;
   const svg = document.getElementById('tag-graph') as unknown as SVGSVGElement;
-  const pt = svgPoint(svg, e.clientX, e.clientY);
+  const pt = svgGraphPoint(svg, e.clientX, e.clientY);
   dragNode.fx = pt.x + dragOffsetX;
   dragNode.fy = pt.y + dragOffsetY;
 }
 
-function onSvgMouseUp(): void {
-  if (!dragNode || !simulation) return;
-  dragNode.fx = undefined;
-  dragNode.fy = undefined;
-  dragNode = null;
-  simulation.alphaTarget(0);
+function onSvgMouseUp(e: MouseEvent): void {
+  const wasDragging = dragNode !== null;
+  if (dragNode && simulation) {
+    dragNode.fx = undefined;
+    dragNode.fy = undefined;
+    dragNode = null;
+    simulation.alphaTarget(0);
+  }
+
+  const pressedNode = svgMouseDownNode;
+  svgMouseDownNode = null;
+  svgMouseDownPos = null;
+
+  if (wasDragging || !pressedNode) return;
+
+  // Treat as click — find the g element that was pressed
+  const nodeId = pressedNode.id;
+  if (focusedNodeId === nodeId) {
+    focusedNodeId = undefined;
+  } else {
+    focusedNodeId = nodeId;
+    if (state) {
+      expandedSkillId = nodeId;
+      state = { ...state, selectedSkillId: nodeId };
+      pendingSelectionEchoKey = selectionEchoKey(nodeId);
+      vscode.postMessage({ type: 'selectSkill', skillId: nodeId });
+    }
+  }
+  drawSvgFrame();
+  updateSkillListOnly();
+  if (focusedNodeId && state?.selectedSkillId) {
+    const skillId = state.selectedSkillId;
+    requestAnimationFrame(() => requestAnimationFrame(() => scrollToSkillCard(skillId)));
+  }
 }
 
 function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
@@ -538,12 +858,34 @@ function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: nu
   return { x: transformed.x, y: transformed.y };
 }
 
+function svgGraphPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
+  const basePoint = svgPoint(svg, clientX, clientY);
+  const cx = 360;
+  const cy = 240;
+  return {
+    x: cx + (basePoint.x - cx) / svgZoomScale,
+    y: cy + (basePoint.y - cy) / svgZoomScale
+  };
+}
+
+function onSvgWheel(e: WheelEvent): void {
+  e.preventDefault();
+  const nextScale = clamp(svgZoomScale * (e.deltaY < 0 ? 1.1 : 1 / 1.1), 0.6, 2.6);
+  if (nextScale === svgZoomScale) return;
+  svgZoomScale = nextScale;
+  drawSvgFrame();
+}
+
 // ── Graph: 3D sphere (Three.js) ──────────────────────────────────────────────
 
 function disposeThree(): void {
   if (threeAnimFrame !== null) {
     cancelAnimationFrame(threeAnimFrame);
     threeAnimFrame = null;
+  }
+  if (threeResizeObserver) {
+    threeResizeObserver.disconnect();
+    threeResizeObserver = null;
   }
   if (threeRenderer) {
     threeRenderer.dispose();
@@ -552,6 +894,7 @@ function disposeThree(): void {
   threeScene = null;
   threeCamera = null;
   threeNodeMeshes = [];
+  applyThreeFocus = null;
 }
 
 function renderSphere(_visibleSkills: SkillRecord[]): void {
@@ -560,19 +903,22 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
   const wrap = document.getElementById('tag-graph-3d') as HTMLElement | null;
   if (!wrap) return;
 
-  if (liveNodes.length === 0) {
-    wrap.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0.5;font-size:12px;">No tags for current filter.</div>';
+  if (liveSkillNodes.length === 0) {
+    wrap.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);opacity:0.5;font-size:12px;">No overlapping skills for current filter.</div>';
     return;
   }
 
   wrap.innerHTML = '';
 
-  // Two-frame defer: first frame lets display:block take effect, second ensures layout
+  // Snapshot now — render() may replace liveSkillNodes before the deferred callback fires
+  const skillNodesSnap = [...liveSkillNodes];
+  const skillLinksSnap = [...liveSkillLinks];
+
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      if (!wrap.isConnected) return;
+      if (!wrap.isConnected || threeRenderer) return;
       try {
-        initThreeScene(wrap);
+        initThreeScene(wrap, skillNodesSnap, skillLinksSnap);
       } catch (err) {
         wrap.innerHTML = `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:red;font-size:11px;max-width:90%;text-align:center;">3D error: ${String(err)}</div>`;
       }
@@ -580,17 +926,14 @@ function renderSphere(_visibleSkills: SkillRecord[]): void {
   });
 }
 
-function initThreeScene(wrap: HTMLElement): void {
+function initThreeScene(
+  wrap: HTMLElement,
+  skillNodes: SkillNode3D[],
+  skillLinks: SkillLink[]
+): void {
   const W = wrap.clientWidth || wrap.getBoundingClientRect().width || 600;
   const H = wrap.clientHeight || wrap.getBoundingClientRect().height || 400;
 
-  // Show size so we can confirm layout is working
-  const dbg = document.createElement('div');
-  dbg.style.cssText = 'position:absolute;top:4px;left:4px;font-size:10px;opacity:0.5;pointer-events:none;z-index:10;';
-  dbg.textContent = `${W}×${H} · ${liveNodes.length} nodes`;
-  wrap.appendChild(dbg);
-
-  // Test WebGL availability before Three.js
   const testCanvas = document.createElement('canvas');
   const gl = testCanvas.getContext('webgl2') ?? testCanvas.getContext('webgl');
   if (!gl) {
@@ -600,176 +943,130 @@ function initThreeScene(wrap: HTMLElement): void {
 
   threeScene = new THREE.Scene();
   threeCamera = new THREE.PerspectiveCamera(50, W / H, 0.1, 100);
-  threeCamera.position.z = 7;
+  threeCamera.position.z = 6;
 
   threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   threeRenderer.setSize(W, H);
-  threeRenderer.setPixelRatio(window.devicePixelRatio);
+  threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   threeRenderer.setClearColor(0x000000, 0);
   wrap.appendChild(threeRenderer.domElement);
 
-  threeScene.add(new THREE.AmbientLight(0xffffff, 0.6));
-  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-  dir.position.set(4, 6, 6);
+  threeScene.add(new THREE.AmbientLight(0xffffff, 0.45));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+  dir.position.set(3, 5, 5);
   threeScene.add(dir);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.2);
+  fill.position.set(-3, -2, -3);
+  threeScene.add(fill);
 
   const root = new THREE.Group();
   threeScene.add(root);
 
-  // ── Layout: force-directed in 3D space ──────────────────────────────────
-  // Nodes start on a Fibonacci sphere, then we pull overlapping pairs closer.
-  const n = liveNodes.length;
-  const maxCount = Math.max(...liveNodes.map((nd) => nd.count), 1);
-
-  // Build overlap lookup: key = sorted ids, value = overlap count
-  const overlapMap = new Map<string, number>();
-  for (const link of liveLinks) {
-    const src = typeof link.source === 'object' ? (link.source as GraphNode).id : link.source as string;
-    const tgt = typeof link.target === 'object' ? (link.target as GraphNode).id : link.target as string;
-    overlapMap.set([src, tgt].sort().join('||'), link.overlap);
-  }
-
-  // Initial positions on a sphere of radius DIST
-  const DIST = 2.8;
-  type Pos3 = { x: number; y: number; z: number };
-  const positions = new Map<string, Pos3>();
-
-  liveNodes.forEach((node, i) => {
-    const phi = Math.acos(1 - (2 * (i + 0.5)) / n);
-    const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-    positions.set(node.id, {
-      x: DIST * Math.sin(phi) * Math.cos(theta),
-      y: DIST * Math.cos(phi),
-      z: DIST * Math.sin(phi) * Math.sin(theta)
-    });
-  });
-
-  // Simple spring relaxation: pull overlapping nodes together, push non-overlapping apart
-  const nodeIds = liveNodes.map((nd) => nd.id);
-  for (let iter = 0; iter < 80; iter++) {
-    const forces = new Map<string, Pos3>(nodeIds.map((id) => [id, { x: 0, y: 0, z: 0 }]));
-
-    // Repulsion between all pairs
-    for (let a = 0; a < nodeIds.length; a++) {
-      for (let b = a + 1; b < nodeIds.length; b++) {
-        const idA = nodeIds[a];
-        const idB = nodeIds[b];
-        const pA = positions.get(idA)!;
-        const pB = positions.get(idB)!;
-        const dx = pA.x - pB.x;
-        const dy = pA.y - pB.y;
-        const dz = pA.z - pB.z;
-        const dist2 = dx * dx + dy * dy + dz * dz + 0.001;
-        const dist = Math.sqrt(dist2);
-
-        const key = [idA, idB].sort().join('||');
-        const overlap = overlapMap.get(key) ?? 0;
-
-        // Use same radius formula as mesh building
-        const mxR = n > 30 ? 0.18 : n > 15 ? 0.24 : 0.32;
-        const mnR = n > 30 ? 0.07 : n > 15 ? 0.09 : 0.12;
-        const rA = mnR + (liveNodes[a].count / maxCount) * (mxR - mnR);
-        const rB = mnR + (liveNodes[b].count / maxCount) * (mxR - mnR);
-        const targetDist = overlap > 0
-          ? Math.max(rA + rB - (overlap / maxCount) * (rA + rB) * 0.8, rA * 0.25 + rB * 0.25)
-          : rA + rB + 0.35 + (1 - overlap / maxCount) * 0.8;
-
-        const f = (dist - targetDist) * 0.08 / dist;
-        const fx = dx * f;
-        const fy = dy * f;
-        const fz = dz * f;
-
-        const fA = forces.get(idA)!;
-        const fB = forces.get(idB)!;
-        fA.x -= fx; fA.y -= fy; fA.z -= fz;
-        fB.x += fx; fB.y += fy; fB.z += fz;
-      }
-    }
-
-    // Apply forces
-    for (const id of nodeIds) {
-      const p = positions.get(id)!;
-      const f = forces.get(id)!;
-      p.x += f.x;
-      p.y += f.y;
-      p.z += f.z;
-    }
-  }
+  const positions = liveSkillPositions3D;
 
   // ── Build meshes ──────────────────────────────────────────────────────────
   threeNodeMeshes = [];
 
-  // Scale radius down as node count grows so spheres don't swallow each other
-  const maxNodeR = n > 30 ? 0.18 : n > 15 ? 0.24 : 0.32;
-  const minNodeR = n > 30 ? 0.07 : n > 15 ? 0.09 : 0.12;
+  const buildMeshes = (focusId: string | undefined) => {
+    // Remove old meshes from root
+    while (root.children.length > 0) root.remove(root.children[0]);
+    threeNodeMeshes = [];
 
-  liveNodes.forEach((node) => {
-    const pos = positions.get(node.id)!;
-    const nodeR = minNodeR + (node.count / maxCount) * (maxNodeR - minNodeR);
-    const color = new THREE.Color(categoryColor(node.category));
-    const isHighlighted = selectedTag === node.label;
-    const isDimmed = selectedTag !== undefined && !isHighlighted;
+    const visibleIds = focusId ? getOverlappingSkillIds3D(focusId) : null;
 
-    // Outer wireframe shell
-    const wireGeo = new THREE.SphereGeometry(nodeR, 18, 14);
-    const wireMat = new THREE.MeshBasicMaterial({
-      color,
-      wireframe: true,
-      opacity: isDimmed ? 0.06 : (isHighlighted ? 0.9 : 0.45),
-      transparent: true
+    skillNodes.forEach((node) => {
+      const pos = positions.get(node.id);
+      if (!pos) return;
+
+      const isVisible = !visibleIds || visibleIds.has(node.id);
+      if (!isVisible) return; // skip non-adjacent nodes when focused
+
+      const nodeR = node.radius;
+      const color = new THREE.Color(categoryColor(node.category));
+      const fillColor = color.clone().lerp(new THREE.Color(0xf4f4f4), 0.42);
+      const isHighlighted = node.id === focusId;
+
+      // Solid sphere for raycasting
+      const geo = new THREE.SphereGeometry(nodeR, 20, 14);
+      const mat = new THREE.MeshStandardMaterial({
+        color: fillColor,
+        opacity: isHighlighted ? 0.84 : 0.56,
+        transparent: true,
+        roughness: 0.52,
+        metalness: 0.04,
+        emissive: color,
+        emissiveIntensity: isHighlighted ? 0.14 : 0.03
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(pos);
+      mesh.userData = { skillId: node.id };
+      root.add(mesh);
+      threeNodeMeshes.push({ mesh, skillId: node.id });
+
+      const shellGeo = new THREE.SphereGeometry(nodeR * 1.02, 18, 12);
+      const shellMat = new THREE.MeshBasicMaterial({
+        color,
+        opacity: isHighlighted ? 0.5 : 0.14,
+        transparent: true,
+        side: THREE.BackSide
+      });
+      const shell = new THREE.Mesh(shellGeo, shellMat);
+      shell.position.copy(pos);
+      root.add(shell);
+
+      // Highlight ring for focused node
+      if (isHighlighted) {
+        const ringGeo = new THREE.TorusGeometry(nodeR * 1.35, nodeR * 0.08, 8, 48);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.85, transparent: true });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.position.copy(pos);
+        root.add(ring);
+      }
+
+      // Label sprite
+      const cvs = document.createElement('canvas');
+      cvs.width = 256; cvs.height = 56;
+      const ctx = cvs.getContext('2d');
+      if (ctx && (focusId || isHighlighted)) {
+        ctx.fillStyle = 'rgba(18, 18, 20, 0.72)';
+        roundRect(ctx, 20, 10, 216, 36, 18);
+        ctx.fill();
+        ctx.font = `${isHighlighted ? 'bold' : 'normal'} 18px sans-serif`;
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(truncate(node.name, 22), 128, 28);
+        const tex = new THREE.CanvasTexture(cvs);
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: isHighlighted ? 1 : 0.78 });
+        const sprite = new THREE.Sprite(spriteMat);
+        const len = pos.length() || 1;
+        sprite.position.set(
+          pos.x + (pos.x / len) * (nodeR + 0.12),
+          pos.y + (pos.y / len) * (nodeR + 0.12) + nodeR * 0.5,
+          pos.z + (pos.z / len) * (nodeR + 0.12)
+        );
+        sprite.scale.set(0.6, 0.135, 1);
+        root.add(sprite);
+      }
     });
-    const wireMesh = new THREE.Mesh(wireGeo, wireMat);
-    wireMesh.position.set(pos.x, pos.y, pos.z);
-    wireMesh.userData = { tag: node.label };
-    root.add(wireMesh);
-    threeNodeMeshes.push({ mesh: wireMesh, label: node.label });
 
-    // Translucent fill — this is what creates the visible overlap when spheres intersect
-    const fillGeo = new THREE.SphereGeometry(nodeR, 18, 14);
-    const fillMat = new THREE.MeshPhongMaterial({
-      color,
-      opacity: isDimmed ? 0.02 : (isHighlighted ? 0.35 : 0.13),
-      transparent: true,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-    const fillMesh = new THREE.Mesh(fillGeo, fillMat);
-    fillMesh.position.set(pos.x, pos.y, pos.z);
-    root.add(fillMesh);
+  };
 
-    // Canvas label sprite
-    const cvs = document.createElement('canvas');
-    cvs.width = 256; cvs.height = 56;
-    const ctx = cvs.getContext('2d');
-    if (ctx) {
-      ctx.font = 'bold 20px sans-serif';
-      ctx.fillStyle = isDimmed ? 'rgba(255,255,255,0.2)' : '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(truncate(node.label, 20), 128, 28);
-      const tex = new THREE.CanvasTexture(cvs);
-      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: isDimmed ? 0.15 : 0.88 });
-      const sprite = new THREE.Sprite(spriteMat);
-      const labelOffset = nodeR + 0.12;
-      const len = Math.sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z) || 1;
-      sprite.position.set(
-        pos.x + (pos.x / len) * labelOffset,
-        pos.y + (pos.y / len) * labelOffset + nodeR * 0.5,
-        pos.z + (pos.z / len) * labelOffset
-      );
-      sprite.scale.set(0.65, 0.145, 1);
-      root.add(sprite);
-    }
-  });
+  applyThreeFocus = (focusId?: string) => {
+    buildMeshes(focusId);
+  };
+  buildMeshes(focusedNodeId);
 
   // ── Mouse orbit + scroll zoom ─────────────────────────────────────────────
   const canvas = threeRenderer.domElement;
   canvas.style.cursor = 'grab';
+  let mouseDownPos = { x: 0, y: 0 };
 
   canvas.addEventListener('mousedown', (e) => {
     sphereIsDragging = true;
     sphereAutoRotate = false;
     sphereDragStart = { x: e.clientX, y: e.clientY };
+    mouseDownPos = { x: e.clientX, y: e.clientY };
     canvas.style.cursor = 'grabbing';
   });
 
@@ -780,33 +1077,52 @@ function initThreeScene(wrap: HTMLElement): void {
     sphereDragStart = { x: e.clientX, y: e.clientY };
   });
 
+  const handleClick = (e: MouseEvent, isDouble: boolean) => {
+    if (!threeCamera || !threeRenderer) return;
+    const moved = Math.abs(e.clientX - mouseDownPos.x) + Math.abs(e.clientY - mouseDownPos.y);
+    if (moved > 5) return;
+
+    root.rotation.x = sphereRotation.x;
+    root.rotation.y = sphereRotation.y;
+    root.updateMatrixWorld(true);
+
+    const rect = threeRenderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, threeCamera);
+    const hits = raycaster.intersectObjects(threeNodeMeshes.map((m) => m.mesh));
+
+    if (isDouble || hits.length === 0) {
+      // Double-click anywhere, or click on empty space → reset focus
+      clearFocusedSkillLocally();
+      return;
+    }
+
+    const skillId = hits[0].object.userData.skillId as string | undefined;
+    if (!skillId || !state) return;
+
+    if (focusedNodeId === skillId) {
+      // Click same node again → clear focus
+      clearFocusedSkillLocally();
+    } else {
+      expandedSkillId = skillId;
+      focusSkillLocally(skillId);
+    }
+  };
+
   canvas.addEventListener('mouseup', (e) => {
     if (!sphereIsDragging) return;
     sphereIsDragging = false;
     canvas.style.cursor = 'grab';
-
-    // Click detection (barely moved = click)
-    const moved = Math.abs(e.clientX - sphereDragStart.x) + Math.abs(e.clientY - sphereDragStart.y);
-    if (moved < 5 && threeCamera && threeRenderer) {
-      const rect = threeRenderer.domElement.getBoundingClientRect();
-      const mouse = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1
-      );
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(mouse, threeCamera);
-      const hits = raycaster.intersectObjects(threeNodeMeshes.map((m) => m.mesh));
-      if (hits.length > 0) {
-        const tag = hits[0].object.userData.tag as string | undefined;
-        if (tag) {
-          selectedTag = selectedTag === tag ? undefined : tag;
-          rebuildGraph();
-          render();
-          return;
-        }
-      }
-    }
+    handleClick(e, false);
     setTimeout(() => { sphereAutoRotate = true; }, 1800);
+  });
+
+  canvas.addEventListener('dblclick', (e) => {
+    handleClick(e, true);
   });
 
   canvas.addEventListener('mouseleave', () => {
@@ -814,11 +1130,10 @@ function initThreeScene(wrap: HTMLElement): void {
     canvas.style.cursor = 'grab';
   });
 
-  // Scroll to zoom
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
     if (!threeCamera) return;
-    threeCamera.position.z = Math.max(2, Math.min(20, threeCamera.position.z + e.deltaY * 0.01));
+    threeCamera.position.z = Math.max(1.5, Math.min(20, threeCamera.position.z + e.deltaY * 0.01));
   }, { passive: false });
 
   function animate(): void {
@@ -832,7 +1147,6 @@ function initThreeScene(wrap: HTMLElement): void {
   }
   animate();
 
-  // Resize when the pane changes size
   const ro = new ResizeObserver(() => {
     if (!threeRenderer || !threeCamera) return;
     const nw = wrap.clientWidth;
@@ -843,6 +1157,7 @@ function initThreeScene(wrap: HTMLElement): void {
     threeCamera.updateProjectionMatrix();
   });
   ro.observe(wrap);
+  threeResizeObserver = ro;
 }
 
 // ── DOM events ───────────────────────────────────────────────────────────────
@@ -914,6 +1229,7 @@ function bindDomEvents(): void {
         case 'clear-filter':
           settingsOpen = false;
           selectedTag = undefined;
+          focusedNodeId = undefined;
           searchText = '';
           searchDraft = '';
           vscode.postMessage({ type: 'clearFilter' });
@@ -934,9 +1250,7 @@ function bindDomEvents(): void {
           if (el.dataset.skillId) {
             const skillId = el.dataset.skillId;
             expandedSkillId = expandedSkillId === skillId ? undefined : skillId;
-            state = { ...state, selectedSkillId: skillId };
-            vscode.postMessage({ type: 'selectSkill', skillId });
-            render();
+            focusSkillLocally(skillId);
           }
           break;
         case 'open-skill':
@@ -946,11 +1260,13 @@ function bindDomEvents(): void {
           break;
         case 'select-tag':
           selectedTag = el.dataset.tag;
+          focusedNodeId = undefined;
           rebuildGraph();
           render();
           break;
         case 'select-tag-clear':
           selectedTag = undefined;
+          focusedNodeId = undefined;
           rebuildGraph();
           render();
           break;
@@ -958,6 +1274,7 @@ function bindDomEvents(): void {
           const newMode = el.dataset.mode as '2d' | '3d';
           if (newMode === graphMode) break;
           graphMode = newMode;
+          focusedNodeId = undefined;
           disposeThree();
           render();
           break;
@@ -1029,6 +1346,141 @@ function bindDomEvents(): void {
       workspaceId: (e.target as HTMLSelectElement).value || undefined
     });
   });
+
+  const sharedThresholdInput = document.getElementById('graph-shared-threshold') as HTMLInputElement | null;
+  const sharedThresholdValue = document.getElementById('graph-shared-threshold-value');
+  sharedThresholdInput?.addEventListener('input', (e) => {
+    const nextValue = Number((e.target as HTMLInputElement).value);
+    graphMinSharedTags = clamp(Math.round(nextValue), 1, Number(sharedThresholdInput.max));
+    if (sharedThresholdValue) sharedThresholdValue.textContent = String(graphMinSharedTags);
+  });
+  sharedThresholdInput?.addEventListener('change', () => {
+    rebuildGraph();
+    render();
+  });
+
+  const spreadInput = document.getElementById('graph-spread-range') as HTMLInputElement | null;
+  const spreadValue = document.getElementById('graph-spread-range-value');
+  spreadInput?.addEventListener('input', (e) => {
+    const nextValue = Number((e.target as HTMLInputElement).value);
+    graphSpreadScale = clamp(nextValue / 100, 0.85, 1.85);
+    if (spreadValue) spreadValue.textContent = `${Math.round(graphSpreadScale * 100)}%`;
+  });
+  spreadInput?.addEventListener('change', () => {
+    rebuildGraph();
+    render();
+  });
+}
+
+function bindResizableLayout(): void {
+  if (!isDashboard || window.matchMedia('(max-width: 900px)').matches) {
+    return;
+  }
+
+  const topSplitter = document.getElementById('dashboard-top-splitter');
+  const mainSplitter = document.getElementById('dashboard-main-splitter');
+
+  topSplitter?.addEventListener('pointerdown', (event) => {
+    const layout = document.querySelector('.dashboard-layout.is-dashboard') as HTMLElement | null;
+    const aboveFold = document.getElementById('above-fold') as HTMLElement | null;
+    if (!layout || !aboveFold) {
+      return;
+    }
+
+    beginSplitterDrag(event, {
+      type: 'vertical',
+      element: topSplitter,
+      startValue: aboveFold.getBoundingClientRect().height,
+      containerSize: layout.getBoundingClientRect().height
+    });
+  });
+
+  mainSplitter?.addEventListener('pointerdown', (event) => {
+    const main = document.getElementById('main-layout') as HTMLElement | null;
+    const graphPane = document.querySelector('.graph-pane') as HTMLElement | null;
+    if (!main || !graphPane) {
+      return;
+    }
+
+    beginSplitterDrag(event, {
+      type: 'horizontal',
+      element: mainSplitter,
+      startValue: graphPane.getBoundingClientRect().width,
+      containerSize: main.getBoundingClientRect().width
+    });
+  });
+}
+
+function beginSplitterDrag(
+  event: PointerEvent,
+  input: {
+    type: 'horizontal' | 'vertical';
+    element: HTMLElement;
+    startValue: number;
+    containerSize: number;
+  }
+): void {
+  event.preventDefault();
+
+  activeSplitterDrag = {
+    type: input.type,
+    startX: event.clientX,
+    startY: event.clientY,
+    startValue: input.startValue,
+    containerSize: input.containerSize
+  };
+
+  document.body.classList.add('is-resizing', input.type === 'horizontal' ? 'horizontal-resize' : 'vertical-resize');
+  input.element.classList.add('active');
+  input.element.setPointerCapture?.(event.pointerId);
+
+  const onMove = (moveEvent: PointerEvent) => {
+    if (!activeSplitterDrag) {
+      return;
+    }
+
+    if (activeSplitterDrag.type === 'horizontal') {
+      const nextWidth = activeSplitterDrag.startValue + (moveEvent.clientX - activeSplitterDrag.startX);
+      const minWidth = Math.min(320, activeSplitterDrag.containerSize * 0.4);
+      const maxWidth = Math.max(minWidth + 80, activeSplitterDrag.containerSize - 280);
+      graphPaneRatio = clamp(nextWidth / activeSplitterDrag.containerSize, minWidth / activeSplitterDrag.containerSize, maxWidth / activeSplitterDrag.containerSize);
+    } else {
+      const nextHeight = activeSplitterDrag.startValue + (moveEvent.clientY - activeSplitterDrag.startY);
+      const minHeight = 220;
+      const maxHeight = Math.max(minHeight + 80, activeSplitterDrag.containerSize - 260);
+      dashboardTopHeightPx = clamp(nextHeight, minHeight, maxHeight);
+    }
+
+    applyDashboardLayoutVars();
+  };
+
+  const onUp = () => {
+    activeSplitterDrag = undefined;
+    document.body.classList.remove('is-resizing', 'horizontal-resize', 'vertical-resize');
+    input.element.classList.remove('active');
+    document.removeEventListener('pointermove', onMove);
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp, { once: true });
+}
+
+function applyDashboardLayoutVars(): void {
+  if (!isDashboard) {
+    return;
+  }
+
+  const layout = document.querySelector('.dashboard-layout.is-dashboard') as HTMLElement | null;
+  if (!layout) {
+    return;
+  }
+
+  layout.style.setProperty('--graph-pane-width', `${(graphPaneRatio * 100).toFixed(1)}%`);
+  if (typeof dashboardTopHeightPx === 'number') {
+    layout.style.setProperty('--dashboard-top-height', `${dashboardTopHeightPx}px`);
+  } else {
+    layout.style.removeProperty('--dashboard-top-height');
+  }
 }
 
 interface FocusedInputState {
@@ -1115,12 +1567,228 @@ function applySelectionListTransform(
   });
 }
 
-function filterGraphForVisible(s: ViewState, visibleSkills: SkillRecord[]) {
-  const ids = new Set(visibleSkills.map((sk) => sk.id));
-  const nodes = s.graph.nodes.filter((n) => n.skillIds.some((id) => ids.has(id)));
-  const nodeIds = new Set(nodes.map((n) => n.id));
-  const links = s.graph.links.filter((l) => nodeIds.has(l.source as string) && nodeIds.has(l.target as string));
-  return { nodes, links };
+function selectionEchoKey(skillId?: string): string {
+  return skillId ?? '__none__';
+}
+
+function isSelectionEchoState(previousState: ViewState | undefined, nextState: ViewState): boolean {
+  if (!previousState || pendingSelectionEchoKey === null) {
+    return false;
+  }
+
+  return pendingSelectionEchoKey === selectionEchoKey(nextState.selectedSkillId)
+    && previousState.filter.scope === nextState.filter.scope
+    && previousState.filter.category === nextState.filter.category
+    && previousState.filter.sourceId === nextState.filter.sourceId
+    && previousState.snapshot.refreshedAt === nextState.snapshot.refreshedAt
+    && previousState.visibleSkills.length === nextState.visibleSkills.length
+    && previousState.visibleSkills.every((skill, index) => skill.id === nextState.visibleSkills[index]?.id)
+    && previousState.recommendation.selectedSkillIds.join('|') === nextState.recommendation.selectedSkillIds.join('|')
+    && previousState.busy === nextState.busy;
+}
+
+function getBaseVisibleSkills(s: ViewState): SkillRecord[] {
+  return applySelectionListTransform(
+    applyLocalFilters(s.visibleSkills, searchText, selectedTag),
+    new Set(s.recommendation.selectedSkillIds),
+    showSelectedOnly
+  );
+}
+
+function getFocusedSkillIds(): Set<string> | null {
+  if (!focusedNodeId) {
+    return null;
+  }
+
+  if (graphMode === '2d') {
+    return getOverlappingSkillIds2D(focusedNodeId);
+  }
+
+  if (!liveSkillNodes.some((node) => node.id === focusedNodeId)) {
+    return null;
+  }
+
+  return getOverlappingSkillIds3D(focusedNodeId);
+}
+
+function getDisplaySkills(s: ViewState): SkillRecord[] {
+  const visibleSkills = [...getBaseVisibleSkills(s)];
+  const focusedSkillIds = getFocusedSkillIds();
+  if (!focusedSkillIds) {
+    return visibleSkills;
+  }
+
+  const focusedSkills = visibleSkills.filter((skill) => focusedSkillIds.has(skill.id));
+  const activeSkillId = s.selectedSkillId;
+  if (!activeSkillId || !focusedSkills.some((skill) => skill.id === activeSkillId)) {
+    return focusedSkills;
+  }
+
+  return focusedSkills.sort((left, right) => {
+    const leftActive = left.id === activeSkillId ? 1 : 0;
+    const rightActive = right.id === activeSkillId ? 1 : 0;
+    return rightActive - leftActive || left.name.localeCompare(right.name);
+  });
+}
+
+function scrollSkillListToTop(): void {
+  requestAnimationFrame(() => {
+    const list = document.querySelector('.skill-list-wrap') as HTMLElement | null;
+    if (list) list.scrollTop = 0;
+  });
+}
+
+function scrollToSkillCard(skillId: string): void {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const card = document.querySelector(`.skill-card[data-skill-id="${CSS.escape(skillId)}"]`) as HTMLElement | null;
+    if (!card) return;
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }));
+}
+
+function refreshGraphFocusVisibility(): void {
+  if (graphMode === '2d') {
+    drawSvgFrame();
+    return;
+  }
+  applyThreeFocus?.(focusedNodeId);
+}
+
+function focusSkillLocally(skillId: string): void {
+  if (!state) return;
+  focusedNodeId = skillId;
+  state = { ...state, selectedSkillId: skillId };
+  pendingSelectionEchoKey = selectionEchoKey(skillId);
+  vscode.postMessage({ type: 'selectSkill', skillId });
+  refreshGraphFocusVisibility();
+  updateSkillListOnly();
+  scrollToSkillCard(skillId);
+}
+
+function clearFocusedSkillLocally(): void {
+  focusedNodeId = undefined;
+  if (state) {
+    state = { ...state, selectedSkillId: undefined };
+    pendingSelectionEchoKey = selectionEchoKey(undefined);
+    vscode.postMessage({ type: 'selectSkill', skillId: undefined });
+  }
+  refreshGraphFocusVisibility();
+  updateSkillListOnly();
+}
+
+// Update only the skill list without rebuilding the whole DOM (preserves 3D canvas)
+function updateSkillListOnly(): void {
+  if (!state) return;
+  const currentState = state;
+  const selectedSkillIds = new Set(currentState.recommendation.selectedSkillIds);
+  const visibleSkills = getDisplaySkills(currentState);
+
+  const skillCardsHtml = visibleSkills.length === 0
+    ? '<div class="empty">No skills match the current filters.</div>'
+    : visibleSkills.map((skill) => {
+        const isActive = skill.id === currentState.selectedSkillId;
+        const isExpanded = skill.id === expandedSkillId;
+        const isSelected = selectedSkillIds.has(skill.id);
+        const tags = skill.tags.slice(0, 3).map((t) => `<span class="pill">${escapeHtml(t)}</span>`).join('');
+        const expandedHtml = isExpanded ? `
+<div class="card-detail">
+  <div class="card-detail-actions">
+    <button class="btn primary" data-action="open-skill" data-skill-id="${skill.id}">Open file</button>
+    <button class="btn ${isSelected ? 'selected-inline' : ''}" data-action="toggle-recommended-skill" data-skill-id="${skill.id}">
+      ${isSelected ? 'Selected for Project' : 'Select for Project'}
+    </button>
+    ${selectedTag ? `<button class="btn" data-action="select-tag-clear">Clear tag filter</button>` : ''}
+  </div>
+  <div class="tag-grid">
+    ${skill.tags.map((t) => `<button class="tag ${selectedTag === t ? 'active-tag' : ''}" data-action="select-tag" data-tag="${escapeAttribute(t)}">${escapeHtml(t)}</button>`).join('')}
+  </div>
+  <div class="card-meta-full">
+    <span class="pill" title="${escapeAttribute(skill.sourceLabel)}">${escapeHtml(truncateMiddle(skill.sourceLabel, 52))}</span>
+  </div>
+</div>` : '';
+        return `<article class="skill-card ${isActive ? 'active' : ''} ${isExpanded ? 'expanded' : ''} ${isSelected ? 'selected-card' : ''}" data-action="toggle-skill" data-skill-id="${skill.id}">
+  <div class="card-row">
+    <div class="card-main">
+      <h3>${escapeHtml(skill.name)}</h3>
+      <p>${escapeHtml(skill.description)}</p>
+    </div>
+    <div class="card-pills">
+      <button class="mini-toggle ${isSelected ? 'selected' : ''}" data-action="toggle-recommended-skill" data-skill-id="${skill.id}">
+        ${isSelected ? 'Selected' : 'Select'}
+      </button>
+      <span class="pill">${escapeHtml(skill.scope)}</span>
+      <span class="pill">${escapeHtml(skill.category)}</span>
+      ${tags}
+    </div>
+  </div>
+  ${expandedHtml}
+</article>`;
+      }).join('');
+
+  const listWrap = document.querySelector('.skill-list-wrap');
+  if (listWrap) {
+    listWrap.innerHTML = skillCardsHtml;
+    listWrap.querySelectorAll<HTMLElement>('[data-action]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        const action = el.dataset.action;
+        if (!action) return;
+        e.stopPropagation();
+        if (action === 'toggle-skill' && el.dataset.skillId) {
+          const skillId = el.dataset.skillId;
+          expandedSkillId = expandedSkillId === skillId ? undefined : skillId;
+          focusSkillLocally(skillId);
+        } else if (action === 'open-skill' && el.dataset.skillId) {
+          vscode.postMessage({ type: 'openSkill', skillId: el.dataset.skillId });
+        } else if (action === 'toggle-recommended-skill' && el.dataset.skillId) {
+          vscode.postMessage({ type: 'toggleRecommendedSkill', skillId: el.dataset.skillId });
+        } else if (action === 'select-tag' && el.dataset.tag) {
+          selectedTag = el.dataset.tag;
+          focusedNodeId = undefined;
+          rebuildGraph();
+          updateSkillListOnly();
+          scrollSkillListToTop();
+        } else if (action === 'select-tag-clear') {
+          selectedTag = undefined;
+          focusedNodeId = undefined;
+          rebuildGraph();
+          updateSkillListOnly();
+          scrollSkillListToTop();
+        }
+      });
+    });
+  }
+
+  // Update pane title count
+  const paneTitle = document.querySelector('.right-pane .pane-title');
+  if (paneTitle) paneTitle.textContent = `Skills · ${visibleSkills.length} shown`;
+  const graphTitle = document.querySelector('.graph-pane .pane-title');
+  if (graphTitle) graphTitle.textContent = `Skill Overlap · ${visibleSkills.length} skills`;
+
+  // Update tag filter badge in cat-strip
+  const catStrip = document.querySelector('.cat-strip');
+  if (catStrip) {
+    const existing = catStrip.querySelector('[data-action="select-tag-clear"]');
+    if (selectedTag && !existing) {
+      const badge = document.createElement('span');
+      badge.className = 'cat-chip active';
+      badge.style.cursor = 'pointer';
+      badge.dataset.action = 'select-tag-clear';
+      badge.textContent = `tag: ${selectedTag} ×`;
+      badge.addEventListener('click', () => {
+        selectedTag = undefined;
+        focusedNodeId = undefined;
+        if (graphMode === '2d') drawSvgFrame();
+        rebuildGraph();
+        updateSkillListOnly();
+        scrollSkillListToTop();
+      });
+      catStrip.appendChild(badge);
+    } else if (!selectedTag && existing) {
+      existing.remove();
+    } else if (selectedTag && existing) {
+      existing.textContent = `tag: ${selectedTag} ×`;
+    }
+  }
 }
 
 function categoryColor(category: string): string {
@@ -1139,6 +1807,24 @@ function categoryColor(category: string): string {
     Other: '#9CA3AF'
   };
   return palette[category] ?? palette.Other;
+}
+
+function roundRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const r = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.arcTo(x + width, y, x + width, y + height, r);
+  context.arcTo(x + width, y + height, x, y + height, r);
+  context.arcTo(x, y + height, x, y, r);
+  context.arcTo(x, y, x + width, y, r);
+  context.closePath();
 }
 
 function clamp(v: number, min: number, max: number): number {

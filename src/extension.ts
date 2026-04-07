@@ -7,6 +7,8 @@ import { OverviewWebviewSession } from './views/overviewWebview';
 import type { SkillFilter } from './shared/types';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  let dashboardPanel: vscode.WebviewPanel | undefined;
+
   const service = new SkillCatalogService(context);
   const treeProvider = new SkillsTreeProvider(service);
   const treeView = vscode.window.createTreeView('skillMap.explorer', {
@@ -18,6 +20,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showCollapseAll: true
   });
   const overviewProvider = new SkillsOverviewProvider(context.extensionUri, service);
+
+  await vscode.commands.executeCommand('setContext', 'skillMap.dashboardOpen', false);
 
   context.subscriptions.push(
     treeView,
@@ -64,7 +68,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       service.clearFilter();
     }),
     vscode.commands.registerCommand('skillMap.openDashboard', async () => {
-      const panel = vscode.window.createWebviewPanel(
+      if (dashboardPanel) {
+        await vscode.commands.executeCommand('setContext', 'skillMap.dashboardOpen', true);
+        dashboardPanel.reveal(vscode.ViewColumn.One, false);
+        return;
+      }
+
+      dashboardPanel = vscode.window.createWebviewPanel(
         'skillMap.dashboard',
         'Skill Map Dashboard',
         vscode.ViewColumn.One,
@@ -75,12 +85,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       );
 
-      const session = new OverviewWebviewSession(panel.webview, context.extensionUri, service, true);
-      panel.onDidDispose(() => {
-        session.dispose();
-      });
+      await vscode.commands.executeCommand('setContext', 'skillMap.dashboardOpen', true);
 
-      await vscode.commands.executeCommand('workbench.action.closeSidebar');
+      const session = new OverviewWebviewSession(dashboardPanel.webview, context.extensionUri, service, true);
+      dashboardPanel.onDidDispose(() => {
+        dashboardPanel = undefined;
+        session.dispose();
+        void vscode.commands.executeCommand('setContext', 'skillMap.dashboardOpen', false);
+      });
     })
   );
 

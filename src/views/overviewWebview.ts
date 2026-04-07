@@ -195,15 +195,17 @@ export class OverviewWebviewSession implements vscode.Disposable {
 
       /* ── Setup + recommendation ── */
       .control-deck {
-        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px;
         padding: 12px 14px; border-bottom: 1px solid var(--panel-border);
         background: linear-gradient(180deg, color-mix(in srgb, var(--panel-bg) 90%, transparent), transparent);
         flex-shrink: 0;
+        align-items: start;
       }
       .setup-card {
         border: 1px solid var(--panel-border); border-radius: 14px; padding: 14px;
         background: color-mix(in srgb, var(--panel-bg) 82%, transparent);
         display: grid; gap: 10px;
+        min-width: 0;
       }
       .setup-card-emphasis {
         border-color: color-mix(in srgb, var(--accent-strong) 70%, var(--panel-border));
@@ -297,24 +299,133 @@ export class OverviewWebviewSession implements vscode.Disposable {
         text-align: left;
       }
 
+      .dashboard-layout {
+        display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0;
+      }
+      .above-fold {
+        display: flex; flex-direction: column; min-width: 0; flex-shrink: 0;
+      }
+      .dashboard-layout.is-dashboard .above-fold {
+        flex: 0 0 var(--dashboard-top-height, clamp(280px, 42vh, 560px));
+        min-height: 220px;
+        overflow: auto;
+      }
+      .layout-splitter {
+        position: relative; flex-shrink: 0;
+        background: color-mix(in srgb, var(--panel-border) 45%, transparent);
+      }
+      .layout-splitter::after {
+        content: '';
+        position: absolute;
+        background: color-mix(in srgb, var(--accent) 50%, var(--panel-border));
+        opacity: 0.38;
+        border-radius: 999px;
+      }
+      .layout-splitter:hover::after,
+      .layout-splitter.active::after {
+        opacity: 0.9;
+      }
+      .layout-splitter.vertical {
+        height: 10px;
+        cursor: row-resize;
+      }
+      .layout-splitter.vertical::after {
+        width: 56px; height: 3px; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      }
+      .layout-splitter.horizontal {
+        width: 10px;
+        cursor: col-resize;
+      }
+      .layout-splitter.horizontal::after {
+        width: 3px; height: 56px; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      }
+      body.is-resizing {
+        user-select: none;
+      }
+      body.is-resizing * {
+        user-select: none !important;
+      }
+      body.is-resizing.horizontal-resize {
+        cursor: col-resize;
+      }
+      body.is-resizing.vertical-resize {
+        cursor: row-resize;
+      }
+
       /* ── Main layout ── */
       .main {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+        display: grid; grid-template-columns: minmax(420px, 1.35fr) minmax(320px, 1fr); gap: 0;
         flex: 1; min-height: 0; overflow: hidden;
-        /* Ensure graph always has at least 400px regardless of content above */
-        min-height: 400px;
+        min-height: clamp(320px, 42vh, 760px);
       }
-      @media (max-width: 1100px) {
-        .control-deck { grid-template-columns: 1fr; }
+      .main.is-dashboard {
+        display: flex;
+        min-height: 260px;
+      }
+      @media (max-width: 1180px) {
+        .main { grid-template-columns: minmax(360px, 1.2fr) minmax(300px, 1fr); }
       }
       @media (max-width: 900px) {
         .main { grid-template-columns: 1fr; }
+        .main.is-dashboard { display: grid; }
+        .dashboard-layout.is-dashboard .above-fold {
+          flex: 0 0 auto;
+          min-height: 0;
+          overflow: visible;
+        }
+        .layout-splitter { display: none; }
+        .graph-pane { border-right: none; border-bottom: 1px solid var(--panel-border); }
       }
 
       /* ── Graph pane ── */
       .graph-pane {
         border-right: 1px solid var(--panel-border);
-        display: flex; flex-direction: column; overflow: hidden;
+        display: flex; flex-direction: column; overflow: hidden; min-width: 0;
+      }
+      .main.is-dashboard .graph-pane {
+        flex: 0 0 var(--graph-pane-width, 58%);
+        min-width: 320px;
+        max-width: 78%;
+      }
+      .graph-pane .pane-header {
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .graph-header-meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        min-width: 0;
+      }
+      .graph-tuning {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .graph-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--surface-muted) 74%, transparent);
+        font-size: 10px;
+      }
+      .graph-control-label,
+      .graph-control-value {
+        opacity: 0.72;
+        white-space: nowrap;
+      }
+      .graph-control-value {
+        min-width: 2.8em;
+        text-align: right;
+      }
+      .graph-range {
+        width: 96px;
+        accent-color: var(--accent);
       }
       .pane-header {
         display: flex; align-items: center; justify-content: space-between;
@@ -344,7 +455,8 @@ export class OverviewWebviewSession implements vscode.Disposable {
       .graph-hint { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: 10px; opacity: 0.4; pointer-events: none; white-space: nowrap; }
 
       /* ── Right pane: list + detail ── */
-      .right-pane { display: flex; flex-direction: column; overflow: hidden; }
+      .right-pane { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+      .main.is-dashboard .right-pane { flex: 1 1 auto; min-width: 280px; }
       .selected-strip {
         display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 12px;
         border-bottom: 1px solid var(--panel-border);

@@ -193,7 +193,8 @@
         {
           "id": "skillMap.overview",
           "name": "Overview",
-          "type": "webview"
+          "type": "webview",
+          "when": "!skillMap.dashboardOpen"
         }
       ]
     },
