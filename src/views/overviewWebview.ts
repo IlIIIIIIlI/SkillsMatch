@@ -50,6 +50,12 @@ export class OverviewWebviewSession implements vscode.Disposable {
       case 'openOpenRouterSettings':
         await this.service.openOpenRouterSettings();
         break;
+      case 'refreshOpenRouterModels':
+        await this.service.refreshOpenRouterModels({ announce: true });
+        break;
+      case 'setOpenRouterModel':
+        await this.service.setOpenRouterModel(message.model);
+        break;
       case 'configureLightRagBaseUrl':
         await this.service.configureLightRagBaseUrl();
         break;
@@ -185,13 +191,67 @@ export class OverviewWebviewSession implements vscode.Disposable {
         background: none; color: inherit; cursor: pointer; font-size: 11px; opacity: 0.75;
         transition: opacity 0.1s, background 0.1s, border-color 0.1s;
       }
+      .cat-chip-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
       .cat-chip:hover { opacity: 1; }
       .cat-chip.active {
         opacity: 1;
         background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg));
         border-color: color-mix(in srgb, var(--accent) 60%, var(--panel-border));
       }
+      .cat-chip-muted {
+        cursor: default;
+        opacity: 0.82;
+      }
       .cat-chip .cnt { font-size: 10px; opacity: 0.6; margin-left: 3px; }
+      .cat-inline-tools {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+        flex-wrap: wrap;
+      }
+      .cat-inline-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--panel-bg) 82%, transparent);
+        font-size: 11px;
+      }
+      .cat-inline-label {
+        opacity: 0.68;
+        white-space: nowrap;
+      }
+      .cat-inline-select {
+        border: none;
+        background: transparent;
+        color: inherit;
+        font-size: 11px;
+        padding: 0;
+      }
+      .cat-color-input {
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+        background: transparent;
+        cursor: pointer;
+        overflow: hidden;
+      }
+      .cat-color-input::-webkit-color-swatch-wrapper {
+        padding: 0;
+      }
+      .cat-color-input::-webkit-color-swatch {
+        border: none;
+        border-radius: 999px;
+      }
 
       /* ── Setup + recommendation ── */
       .control-deck {
@@ -221,6 +281,24 @@ export class OverviewWebviewSession implements vscode.Disposable {
       }
       .setup-card p {
         margin: 0; font-size: 12px; line-height: 1.5; opacity: 0.78;
+      }
+      .setup-field {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+      }
+      .setup-field-label {
+        font-size: 11px;
+        opacity: 0.64;
+      }
+      .setup-select {
+        width: 100%;
+        min-width: 0;
+        border-radius: 8px;
+        border: 1px solid var(--panel-border);
+        padding: 6px 10px;
+        background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+        color: inherit;
       }
       .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
       .setup-foot { font-size: 11px; opacity: 0.62; }
@@ -452,6 +530,36 @@ export class OverviewWebviewSession implements vscode.Disposable {
         width: 100%; height: 100%; position: absolute; top: 0; left: 0; overflow: hidden;
       }
       #tag-graph-3d canvas { display: block; }
+      .graph-hover-tip {
+        position: absolute;
+        z-index: 4;
+        max-width: min(280px, calc(100% - 24px));
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel-bg) 94%, rgba(8,8,10,0.8));
+        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.22);
+        pointer-events: none;
+      }
+      .graph-hover-title {
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.4;
+        margin-bottom: 8px;
+      }
+      .graph-hover-meta,
+      .graph-hover-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .graph-hover-copy {
+        margin: 8px 0 6px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        opacity: 0.58;
+      }
       .graph-hint { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); font-size: 10px; opacity: 0.4; pointer-events: none; white-space: nowrap; }
 
       /* ── Right pane: list + detail ── */

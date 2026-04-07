@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import type {
+  OpenRouterModelSummary,
   ProjectWorkspaceSummary,
   RecommendedSkill,
   SkillFilter,
@@ -75,6 +76,7 @@ export class SkillCatalogService {
   private readonly changeEmitter = new vscode.EventEmitter<ViewState>();
   private readonly state: ViewState = emptyViewState();
   private currentRefresh?: Promise<void>;
+  private openRouterModelsTask?: Promise<void>;
   private backgroundTagTask?: Promise<void>;
   private knowledgeBaseSyncTask?: Promise<void>;
   private recommendationTask?: Promise<void>;
@@ -90,6 +92,7 @@ export class SkillCatalogService {
   public async initialize(): Promise<void> {
     this.refreshRuntimeState(false);
     await this.refresh({ announce: false, reason: 'startup' });
+    void this.refreshOpenRouterModels({ announce: false });
   }
 
   public async refresh(options: { announce: boolean; reason: 'startup' | 'manual' }): Promise<void> {
@@ -120,6 +123,7 @@ export class SkillCatalogService {
     this.refreshRuntimeState(true);
     vscode.window.showInformationMessage('OpenRouter API key stored in VS Code SecretStorage.');
     this.recomputeDerivedState({ statusMessage: 'OpenRouter API key configured.' });
+    void this.refreshOpenRouterModels({ announce: false });
 
     if (this.readSettings().autoGenerateTagsOnRefresh) {
       void this.generateTags({ announce: true });
@@ -128,6 +132,75 @@ export class SkillCatalogService {
 
   public async openOpenRouterSettings(): Promise<void> {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'skillMap.openRouter');
+  }
+
+  public async refreshOpenRouterModels(options: { announce: boolean }): Promise<void> {
+    if (this.openRouterModelsTask) {
+      return this.openRouterModelsTask;
+    }
+
+    const task = (async () => {
+      this.state.openRouter = {
+        ...this.state.openRouter,
+        modelsLoading: true,
+        modelsError: undefined
+      };
+      this.emitState();
+
+      try {
+        const settings = this.readSettings();
+        const apiKey = await this.context.secrets.get(OPENROUTER_SECRET_KEY) ?? undefined;
+        const models = await OpenRouterClient.listModels({
+          baseUrl: settings.baseUrl,
+          apiKey
+        });
+        const currentModel = settings.model;
+        const nextModels = ensureCurrentModel(models, currentModel);
+
+        this.state.openRouter = {
+          ...this.state.openRouter,
+          baseUrl: settings.baseUrl,
+          model: currentModel,
+          availableModels: nextModels,
+          modelsLoading: false,
+          modelsUpdatedAt: new Date().toISOString(),
+          modelsError: undefined
+        };
+        this.emitState();
+
+        if (options.announce) {
+          vscode.window.showInformationMessage(`Loaded ${nextModels.length} OpenRouter models.`);
+        }
+      } catch (error) {
+        const message = toErrorMessage(error);
+        this.state.openRouter = {
+          ...this.state.openRouter,
+          modelsLoading: false,
+          modelsError: message
+        };
+        this.emitState();
+
+        if (options.announce) {
+          vscode.window.showWarningMessage(`OpenRouter model list failed: ${message}`);
+        }
+      }
+    })().finally(() => {
+      this.openRouterModelsTask = undefined;
+    });
+
+    this.openRouterModelsTask = task;
+    return task;
+  }
+
+  public async setOpenRouterModel(model: string): Promise<void> {
+    const nextModel = model.trim();
+    if (!nextModel) {
+      return;
+    }
+
+    await vscode.workspace.getConfiguration('skillMap').update('openRouter.model', nextModel, vscode.ConfigurationTarget.Global);
+    this.refreshRuntimeState(this.state.openRouter.keyConfigured);
+    this.recomputeDerivedState({ statusMessage: `OpenRouter model set to ${nextModel}. Run Generate AI Tags to refresh cached tags.` });
   }
 
   public async configureLightRagBaseUrl(): Promise<void> {
@@ -199,12 +272,13 @@ export class SkillCatalogService {
     const aiCache = this.readAiCache();
     const pending = this.state.snapshot.skills.filter((skill) => {
       const cacheKey = createInsightCacheKey(skill);
-      return !(cacheKey in aiCache);
+      const cached = aiCache[cacheKey];
+      return !cached || cached.model !== settings.model;
     });
 
     if (pending.length === 0) {
       if (options.announce) {
-        vscode.window.showInformationMessage('All current skills already have cached AI tags.');
+        vscode.window.showInformationMessage(`All current skills already have cached AI tags for ${settings.model}.`);
       }
       return;
     }
@@ -841,7 +915,11 @@ export class SkillCatalogService {
     this.state.openRouter = {
       baseUrl: settings.baseUrl,
       model: settings.model,
-      keyConfigured
+      keyConfigured,
+      availableModels: ensureCurrentModel(this.state.openRouter.availableModels, settings.model),
+      modelsLoading: this.state.openRouter.modelsLoading,
+      modelsUpdatedAt: this.state.openRouter.modelsUpdatedAt,
+      modelsError: this.state.openRouter.modelsError
     };
     this.state.onlineSources = {
       ...this.state.onlineSources,
@@ -976,7 +1054,9 @@ function emptyViewState(): ViewState {
     openRouter: {
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'openai/gpt-4.1-mini',
-      keyConfigured: false
+      keyConfigured: false,
+      availableModels: [{ id: 'openai/gpt-4.1-mini', name: 'openai/gpt-4.1-mini' }],
+      modelsLoading: false
     },
     lightRag: {
       baseUrl: 'http://127.0.0.1:9621',
@@ -1045,6 +1125,17 @@ function sameStringArray(left: readonly string[], right: readonly string[]): boo
   }
 
   return left.every((entry, index) => entry === right[index]);
+}
+
+function ensureCurrentModel(models: OpenRouterModelSummary[], currentModel: string): OpenRouterModelSummary[] {
+  if (models.some((entry) => entry.id === currentModel)) {
+    return models;
+  }
+
+  return [
+    { id: currentModel, name: currentModel },
+    ...models
+  ];
 }
 
 function rankSkillsLexically(question: string, skills: SkillRecord[]): SkillRecord[] {

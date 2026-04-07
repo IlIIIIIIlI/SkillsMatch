@@ -55,6 +55,7 @@ const bootState = (() => {
 })();
 
 const isDashboard = app.getAttribute('data-dashboard') === 'true';
+const graphPrefs = readGraphPrefs();
 
 let state = (vscode.getState() as ViewState | undefined) ?? bootState;
 let searchText = '';
@@ -75,6 +76,10 @@ let pendingSelectionEchoKey: string | null = null;
 let svgZoomScale = 1;
 let graphMinSharedTags = 1;
 let graphSpreadScale = 1.32;
+let graphColorMode: 'category' | 'overlap' = graphPrefs.colorMode ?? 'category';
+let graphCategoryColors: Record<string, string> = graphPrefs.categoryColors ?? {};
+let hoveredNodeId: string | undefined;
+let hoverPointer: { x: number; y: number } | undefined;
 
 interface SplitterDragState {
   type: 'horizontal' | 'vertical';
@@ -166,6 +171,15 @@ function render(): void {
   const graphStats = buildSkillOverlapGraph(getBaseVisibleSkills(s));
   const graphMaxSharedTags = Math.max(1, graphStats.maxSharedTags);
   graphMinSharedTags = clamp(graphMinSharedTags, 1, graphMaxSharedTags);
+  const currentOpenRouterModel = s.openRouter.availableModels.find((model) => model.id === s.openRouter.model);
+  const openRouterModelTitle = currentOpenRouterModel?.name ?? s.openRouter.model;
+  const openRouterModelOptionsHtml = s.openRouter.availableModels
+    .map((model) => {
+      const labelParts = [model.name];
+      if (model.contextLength) labelParts.push(`${Math.round(model.contextLength / 1000)}k ctx`);
+      return `<option value="${escapeAttribute(model.id)}" ${model.id === s.openRouter.model ? 'selected' : ''}>${escapeHtml(labelParts.join(' · '))}</option>`;
+    })
+    .join('');
   const selectedSkill =
     visibleSkills.find((sk) => sk.id === s.selectedSkillId) ??
     s.snapshot.skills.find((sk) => sk.id === s.selectedSkillId) ??
@@ -241,9 +255,19 @@ function render(): void {
   const catHtml = s.snapshot.categories
     .map((cat) => {
       const active = s.filter.category === cat.name;
-      return `<button class="cat-chip ${active ? 'active' : ''}" data-action="category" data-category="${escapeAttribute(cat.name)}">
+      const chipColor = resolvedCategoryColor(cat.name);
+      return `<span class="cat-chip-group">
+      <button class="cat-chip ${active ? 'active' : ''}" data-action="category" data-category="${escapeAttribute(cat.name)}">
         ${escapeHtml(cat.name)}<span class="cnt">${cat.count}</span>
-      </button>`;
+      </button>
+      <input
+        class="cat-color-input"
+        type="color"
+        value="${escapeAttribute(chipColor)}"
+        data-category-color="${escapeAttribute(cat.name)}"
+        title="Set graph color for ${escapeAttribute(cat.name)}"
+      />
+    </span>`;
     })
     .join('');
 
@@ -296,6 +320,10 @@ function render(): void {
   const tagFilterBadge = selectedTag
     ? `<span class="cat-chip active" style="cursor:pointer;" data-action="select-tag-clear">tag: ${escapeHtml(selectedTag)} ×</span>`
     : '';
+  const colorLegendLabel = graphColorMode === 'category'
+    ? 'Color = category'
+    : 'Color = overlap count';
+  const hasCustomCategoryColors = Object.keys(graphCategoryColors).length > 0;
 
   app.innerHTML = `
 <nav class="topbar">
@@ -326,17 +354,34 @@ function render(): void {
 <section class="control-deck">
   <article class="setup-card setup-card-emphasis">
     <div class="setup-kicker">OpenRouter</div>
-    <h2>${escapeHtml(s.openRouter.model)}</h2>
+    <h2>${escapeHtml(openRouterModelTitle)}</h2>
     <p>${escapeHtml(
       s.openRouter.keyConfigured
         ? 'Ready for AI tag generation and skill recommendation.'
         : 'Configure the OpenRouter key to enable AI ranking and enriched tags.'
     )}</p>
+    <label class="setup-field">
+      <span class="setup-field-label">Model for tags / ranking</span>
+      <select
+        id="openrouter-model-select"
+        class="setup-select"
+        ${s.openRouter.modelsLoading ? 'disabled' : ''}
+      >
+        ${openRouterModelOptionsHtml}
+      </select>
+    </label>
     <div class="setup-actions">
       <button class="btn primary" data-action="configure-key">${s.openRouter.keyConfigured ? 'Rotate Key' : 'Configure Key'}</button>
-      <button class="btn" data-action="open-openrouter-settings">Model Settings</button>
+      <button class="btn" data-action="refresh-openrouter-models">${s.openRouter.modelsLoading ? 'Loading Models…' : 'Refresh Models'}</button>
     </div>
-    <div class="setup-foot">${escapeHtml(truncateMiddle(s.openRouter.baseUrl, 48))}</div>
+    <div class="setup-foot">
+      ${escapeHtml(truncateMiddle(s.openRouter.baseUrl, 48))}
+      ${s.openRouter.modelsError
+        ? ` · model list unavailable: ${escapeHtml(truncate(s.openRouter.modelsError, 84))}`
+        : s.openRouter.modelsUpdatedAt
+          ? ` · ${s.openRouter.availableModels.length} models loaded`
+          : ''}
+    </div>
   </article>
 
   <article class="setup-card">
@@ -399,6 +444,17 @@ function render(): void {
 <div class="cat-strip">
   ${catHtml}
   ${tagFilterBadge}
+  <div class="cat-inline-tools">
+    <label class="cat-inline-control" title="Choose what graph colors represent">
+      <span class="cat-inline-label">Color</span>
+      <select id="graph-color-mode" class="cat-inline-select">
+        <option value="category" ${graphColorMode === 'category' ? 'selected' : ''}>Category</option>
+        <option value="overlap" ${graphColorMode === 'overlap' ? 'selected' : ''}>Overlap</option>
+      </select>
+    </label>
+    <span id="graph-color-legend" class="cat-chip cat-chip-muted">${escapeHtml(colorLegendLabel)}</span>
+    ${hasCustomCategoryColors ? '<button class="cat-chip cat-chip-muted" data-action="reset-category-colors">Reset Colors</button>' : ''}
+  </div>
 </div>
 </div>
 ${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize top panels"></div>' : ''}
@@ -445,6 +501,7 @@ ${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertica
     <div class="graph-wrap" id="graph-wrap">
       <svg id="tag-graph" viewBox="0 0 720 480" role="img" aria-label="Skill overlap graph" style="${graphMode === '3d' ? 'display:none' : ''}"></svg>
       <div id="tag-graph-3d" style="${graphMode === '3d' ? 'display:block' : 'display:none'}"></div>
+      <div id="graph-hover-tip" class="graph-hover-tip" hidden></div>
       <span class="graph-hint">${graphMode === '2d' ? 'Each ball = skill · Overlap = shared tags · Color = category · Drag nodes · Scroll to zoom · Click to focus · Double-click to reset' : 'Each ball = skill · Overlap = shared tags · Color = category · Drag to rotate · Scroll to zoom · Click to focus · Double-click to reset'}</span>
     </div>
   </div>
@@ -710,6 +767,10 @@ function rebuildGraph(): void {
   if (focusedNodeId && !liveNodes.some((node) => node.id === focusedNodeId)) {
     focusedNodeId = undefined;
   }
+  if (hoveredNodeId && !liveNodes.some((node) => node.id === hoveredNodeId)) {
+    hoveredNodeId = undefined;
+    hoverPointer = undefined;
+  }
 }
 
 function attachSvgToSimulation(): void {
@@ -752,7 +813,7 @@ function drawSvgFrame(): void {
     if (visibleNodeIds && !visibleNodeIds.has(n.id)) return '';
     const nx = clamp(n.x ?? W / 2, n.radius, W - n.radius);
     const ny = clamp(n.y ?? H / 2, n.radius, H - n.radius);
-    const fill = categoryColor(n.category);
+    const fill = graphNodeColor(n.id, n.category);
     const isHighlighted = n.id === focusedNodeId;
     const r = n.radius;
     const fontSize = Math.max(9, Math.min(12, r * 0.7));
@@ -879,6 +940,7 @@ function onSvgWheel(e: WheelEvent): void {
 // ── Graph: 3D sphere (Three.js) ──────────────────────────────────────────────
 
 function disposeThree(): void {
+  hideGraphHoverTip();
   if (threeAnimFrame !== null) {
     cancelAnimationFrame(threeAnimFrame);
     threeAnimFrame = null;
@@ -973,6 +1035,7 @@ function initThreeScene(
     threeNodeMeshes = [];
 
     const visibleIds = focusId ? getOverlappingSkillIds3D(focusId) : null;
+    const showCompactLabels = Boolean(focusId && visibleIds && visibleIds.size <= 14);
 
     skillNodes.forEach((node) => {
       const pos = positions.get(node.id);
@@ -982,20 +1045,21 @@ function initThreeScene(
       if (!isVisible) return; // skip non-adjacent nodes when focused
 
       const nodeR = node.radius;
-      const color = new THREE.Color(categoryColor(node.category));
+      const color = new THREE.Color(graphNodeColor(node.id, node.category));
       const fillColor = color.clone().lerp(new THREE.Color(0xf4f4f4), 0.42);
       const isHighlighted = node.id === focusId;
+      const isHovered = node.id === hoveredNodeId;
 
       // Solid sphere for raycasting
       const geo = new THREE.SphereGeometry(nodeR, 20, 14);
       const mat = new THREE.MeshStandardMaterial({
         color: fillColor,
-        opacity: isHighlighted ? 0.84 : 0.56,
+        opacity: isHighlighted ? 0.84 : isHovered ? 0.74 : 0.56,
         transparent: true,
         roughness: 0.52,
         metalness: 0.04,
         emissive: color,
-        emissiveIntensity: isHighlighted ? 0.14 : 0.03
+        emissiveIntensity: isHighlighted ? 0.14 : isHovered ? 0.08 : 0.03
       });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.copy(pos);
@@ -1006,7 +1070,7 @@ function initThreeScene(
       const shellGeo = new THREE.SphereGeometry(nodeR * 1.02, 18, 12);
       const shellMat = new THREE.MeshBasicMaterial({
         color,
-        opacity: isHighlighted ? 0.5 : 0.14,
+        opacity: isHighlighted ? 0.5 : isHovered ? 0.28 : 0.14,
         transparent: true,
         side: THREE.BackSide
       });
@@ -1025,19 +1089,29 @@ function initThreeScene(
 
       // Label sprite
       const cvs = document.createElement('canvas');
-      cvs.width = 256; cvs.height = 56;
+      cvs.width = 320; cvs.height = 88;
       const ctx = cvs.getContext('2d');
-      if (ctx && (focusId || isHighlighted)) {
+      if (ctx && (isHighlighted || isHovered || showCompactLabels)) {
+        const lines = buildSphereLabelLines(node.id, focusId, isHighlighted || isHovered);
         ctx.fillStyle = 'rgba(18, 18, 20, 0.72)';
-        roundRect(ctx, 20, 10, 216, 36, 18);
+        roundRect(ctx, 18, 12, 284, lines.length > 1 ? 54 : 38, 18);
         ctx.fill();
-        ctx.font = `${isHighlighted ? 'bold' : 'normal'} 18px sans-serif`;
+        ctx.font = `${isHighlighted || isHovered ? 'bold' : 'normal'} ${lines.length > 1 ? 18 : 16}px sans-serif`;
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(truncate(node.name, 22), 128, 28);
+        ctx.fillText(lines[0] ?? truncate(node.name, 22), 160, lines.length > 1 ? 30 : 31);
+        if (lines[1]) {
+          ctx.font = '13px sans-serif';
+          ctx.fillStyle = 'rgba(255,255,255,0.8)';
+          ctx.fillText(lines[1], 160, 52);
+        }
         const tex = new THREE.CanvasTexture(cvs);
-        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: isHighlighted ? 1 : 0.78 });
+        const spriteMat = new THREE.SpriteMaterial({
+          map: tex,
+          transparent: true,
+          opacity: isHighlighted ? 1 : isHovered ? 0.96 : 0.82
+        });
         const sprite = new THREE.Sprite(spriteMat);
         const len = pos.length() || 1;
         sprite.position.set(
@@ -1045,7 +1119,7 @@ function initThreeScene(
           pos.y + (pos.y / len) * (nodeR + 0.12) + nodeR * 0.5,
           pos.z + (pos.z / len) * (nodeR + 0.12)
         );
-        sprite.scale.set(0.6, 0.135, 1);
+        sprite.scale.set(lines.length > 1 ? 0.82 : 0.68, lines.length > 1 ? 0.22 : 0.145, 1);
         root.add(sprite);
       }
     });
@@ -1071,16 +1145,24 @@ function initThreeScene(
   });
 
   canvas.addEventListener('mousemove', (e) => {
-    if (!sphereIsDragging) return;
-    sphereRotation.y += (e.clientX - sphereDragStart.x) * 0.007;
-    sphereRotation.x += (e.clientY - sphereDragStart.y) * 0.007;
-    sphereDragStart = { x: e.clientX, y: e.clientY };
+    if (sphereIsDragging) {
+      hideGraphHoverTip();
+      sphereRotation.y += (e.clientX - sphereDragStart.x) * 0.007;
+      sphereRotation.x += (e.clientY - sphereDragStart.y) * 0.007;
+      sphereDragStart = { x: e.clientX, y: e.clientY };
+      return;
+    }
+
+    const hoveredSkillId = pickSkillId(e.clientX, e.clientY);
+    canvas.style.cursor = hoveredSkillId ? 'pointer' : 'grab';
+    setHoveredSkill(
+      hoveredSkillId,
+      hoveredSkillId ? { x: e.clientX, y: e.clientY } : undefined
+    );
   });
 
-  const handleClick = (e: MouseEvent, isDouble: boolean) => {
-    if (!threeCamera || !threeRenderer) return;
-    const moved = Math.abs(e.clientX - mouseDownPos.x) + Math.abs(e.clientY - mouseDownPos.y);
-    if (moved > 5) return;
+  const pickSkillId = (clientX: number, clientY: number): string | undefined => {
+    if (!threeCamera || !threeRenderer) return undefined;
 
     root.rotation.x = sphereRotation.x;
     root.rotation.y = sphereRotation.y;
@@ -1088,21 +1170,27 @@ function initThreeScene(
 
     const rect = threeRenderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -((e.clientY - rect.top) / rect.height) * 2 + 1
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
     );
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, threeCamera);
     const hits = raycaster.intersectObjects(threeNodeMeshes.map((m) => m.mesh));
+    return hits[0]?.object.userData.skillId as string | undefined;
+  };
 
-    if (isDouble || hits.length === 0) {
+  const handleClick = (e: MouseEvent, isDouble: boolean) => {
+    if (!threeCamera || !threeRenderer) return;
+    const moved = Math.abs(e.clientX - mouseDownPos.x) + Math.abs(e.clientY - mouseDownPos.y);
+    if (moved > 5) return;
+
+    const skillId = pickSkillId(e.clientX, e.clientY);
+    if (isDouble || !skillId) {
       // Double-click anywhere, or click on empty space → reset focus
       clearFocusedSkillLocally();
       return;
     }
-
-    const skillId = hits[0].object.userData.skillId as string | undefined;
-    if (!skillId || !state) return;
+    if (!state) return;
 
     if (focusedNodeId === skillId) {
       // Click same node again → clear focus
@@ -1128,6 +1216,7 @@ function initThreeScene(
   canvas.addEventListener('mouseleave', () => {
     sphereIsDragging = false;
     canvas.style.cursor = 'grab';
+    setHoveredSkill(undefined);
   });
 
   canvas.addEventListener('wheel', (e) => {
@@ -1187,6 +1276,16 @@ function bindDomEvents(): void {
         case 'open-openrouter-settings':
           settingsOpen = false;
           vscode.postMessage({ type: 'openOpenRouterSettings' });
+          break;
+        case 'refresh-openrouter-models':
+          settingsOpen = false;
+          vscode.postMessage({ type: 'refreshOpenRouterModels' });
+          break;
+        case 'reset-category-colors':
+          graphCategoryColors = {};
+          persistGraphPrefs();
+          render();
+          refreshGraphFocusVisibility();
           break;
         case 'configure-lightrag':
           settingsOpen = false;
@@ -1344,6 +1443,38 @@ function bindDomEvents(): void {
     vscode.postMessage({
       type: 'setProjectWorkspace',
       workspaceId: (e.target as HTMLSelectElement).value || undefined
+    });
+  });
+
+  const openRouterModelSelect = document.getElementById('openrouter-model-select') as HTMLSelectElement | null;
+  openRouterModelSelect?.addEventListener('change', (e) => {
+    const nextModel = (e.target as HTMLSelectElement).value;
+    if (!nextModel || nextModel === state?.openRouter.model) return;
+    vscode.postMessage({ type: 'setOpenRouterModel', model: nextModel });
+  });
+
+  const graphColorModeSelect = document.getElementById('graph-color-mode') as HTMLSelectElement | null;
+  graphColorModeSelect?.addEventListener('change', (e) => {
+    const nextMode = (e.target as HTMLSelectElement).value === 'overlap' ? 'overlap' : 'category';
+    if (nextMode === graphColorMode) return;
+    graphColorMode = nextMode;
+    persistGraphPrefs();
+    updateGraphColorLegend();
+    refreshGraphFocusVisibility();
+  });
+
+  app.querySelectorAll<HTMLInputElement>('.cat-color-input').forEach((input) => {
+    input.addEventListener('input', (e) => {
+      const category = input.dataset.categoryColor;
+      if (!category) return;
+      graphCategoryColors = {
+        ...graphCategoryColors,
+        [category]: (e.target as HTMLInputElement).value
+      };
+      persistGraphPrefs();
+      if (graphColorMode === 'category') {
+        refreshGraphFocusVisibility();
+      }
     });
   });
 
@@ -1631,6 +1762,118 @@ function getDisplaySkills(s: ViewState): SkillRecord[] {
   });
 }
 
+function getSkillRecordById(skillId: string): SkillRecord | undefined {
+  return state?.snapshot.skills.find((skill) => skill.id === skillId);
+}
+
+function getSharedTagsBetweenSkillIds(leftSkillId: string, rightSkillId: string): string[] {
+  const left = getSkillRecordById(leftSkillId);
+  const right = getSkillRecordById(rightSkillId);
+  if (!left || !right) return [];
+  const rightTags = new Set(right.tags);
+  return left.tags.filter((tag) => rightTags.has(tag)).sort((a, b) => a.localeCompare(b));
+}
+
+function buildGraphHoverTooltipHtml(skillId: string): string {
+  const skill = getSkillRecordById(skillId);
+  if (!skill) return '';
+
+  const overlapCount = Math.max(0, buildLinkedSkillIdSet(skillId).size - 1);
+  const sharedTagsWithFocus = focusedNodeId && focusedNodeId !== skillId
+    ? getSharedTagsBetweenSkillIds(focusedNodeId, skillId)
+    : [];
+  const sharedTagHtml = sharedTagsWithFocus.slice(0, 4)
+    .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
+    .join('');
+  const tagHtml = skill.tags.slice(0, 5)
+    .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
+    .join('');
+
+  return `<div class="graph-hover-title">${escapeHtml(skill.name)}</div>
+<div class="graph-hover-meta">
+  <span class="pill">${escapeHtml(skill.category)}</span>
+  <span class="pill">${skill.tags.length} tags</span>
+  <span class="pill">${overlapCount} overlaps</span>
+  <span class="pill">${graphColorMode === 'category' ? 'color: category' : `color: ${overlapCount} overlaps`}</span>
+</div>
+${sharedTagsWithFocus.length > 0
+  ? `<div class="graph-hover-copy">Shared with focus</div><div class="graph-hover-tags">${sharedTagHtml}</div>`
+  : ''}
+<div class="graph-hover-copy">Top tags</div>
+<div class="graph-hover-tags">${tagHtml}</div>`;
+}
+
+function positionGraphHoverTip(clientX: number, clientY: number): void {
+  const wrap = document.getElementById('graph-wrap') as HTMLElement | null;
+  const tip = document.getElementById('graph-hover-tip') as HTMLDivElement | null;
+  if (!wrap || !tip || tip.hidden) return;
+
+  const rect = wrap.getBoundingClientRect();
+  const tipWidth = tip.offsetWidth || 220;
+  const tipHeight = tip.offsetHeight || 96;
+  const rawLeft = clientX - rect.left + 14;
+  const rawTop = clientY - rect.top + 14;
+  const left = clamp(rawLeft, 12, Math.max(12, rect.width - tipWidth - 12));
+  const top = clamp(rawTop, 12, Math.max(12, rect.height - tipHeight - 12));
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+function renderGraphHoverTip(skillId: string, pointer?: { x: number; y: number }): void {
+  const tip = document.getElementById('graph-hover-tip') as HTMLDivElement | null;
+  if (!tip) return;
+
+  tip.innerHTML = buildGraphHoverTooltipHtml(skillId);
+  tip.hidden = false;
+  if (pointer) {
+    positionGraphHoverTip(pointer.x, pointer.y);
+  }
+}
+
+function hideGraphHoverTip(): void {
+  const tip = document.getElementById('graph-hover-tip') as HTMLDivElement | null;
+  if (!tip) return;
+  tip.hidden = true;
+  tip.innerHTML = '';
+}
+
+function setHoveredSkill(skillId?: string, pointer?: { x: number; y: number }): void {
+  const nextHoveredId = skillId && getSkillRecordById(skillId) ? skillId : undefined;
+  const changed = hoveredNodeId !== nextHoveredId;
+  hoveredNodeId = nextHoveredId;
+  hoverPointer = nextHoveredId && pointer ? pointer : undefined;
+
+  if (nextHoveredId) {
+    renderGraphHoverTip(nextHoveredId, pointer);
+  } else {
+    hideGraphHoverTip();
+  }
+
+  if (changed && graphMode === '3d') {
+    applyThreeFocus?.(focusedNodeId);
+  }
+}
+
+function buildSphereLabelLines(skillId: string, focusId: string | undefined, emphasize: boolean): string[] {
+  const skill = getSkillRecordById(skillId);
+  if (!skill) return [];
+
+  const sharedTags = focusId && focusId !== skillId
+    ? getSharedTagsBetweenSkillIds(focusId, skillId)
+    : [];
+  const firstLine = truncate(skill.name, emphasize ? 24 : 20);
+
+  if (!emphasize) {
+    return [firstLine];
+  }
+
+  const detail = sharedTags.length > 0
+    ? truncate(sharedTags.slice(0, 2).join(' · '), 28)
+    : truncate(skill.tags.slice(0, 2).join(' · ') || `${skill.tags.length} tags`, 28);
+
+  return detail ? [firstLine, detail] : [firstLine];
+}
+
 function scrollSkillListToTop(): void {
   requestAnimationFrame(() => {
     const list = document.querySelector('.skill-list-wrap') as HTMLElement | null;
@@ -1648,10 +1891,22 @@ function scrollToSkillCard(skillId: string): void {
 
 function refreshGraphFocusVisibility(): void {
   if (graphMode === '2d') {
+    hideGraphHoverTip();
     drawSvgFrame();
     return;
   }
+  if (hoveredNodeId) {
+    renderGraphHoverTip(hoveredNodeId, hoverPointer);
+  }
   applyThreeFocus?.(focusedNodeId);
+}
+
+function updateGraphColorLegend(): void {
+  const legend = document.getElementById('graph-color-legend');
+  if (!legend) return;
+  legend.textContent = graphColorMode === 'category'
+    ? 'Color = category'
+    : 'Color = overlap count';
 }
 
 function focusSkillLocally(skillId: string): void {
@@ -1807,6 +2062,81 @@ function categoryColor(category: string): string {
     Other: '#9CA3AF'
   };
   return palette[category] ?? palette.Other;
+}
+
+function resolvedCategoryColor(category: string): string {
+  return graphCategoryColors[category] ?? categoryColor(category);
+}
+
+function graphNodeColor(skillId: string, category: string): string {
+  if (graphColorMode === 'overlap') {
+    return overlapColor(skillId);
+  }
+  return resolvedCategoryColor(category);
+}
+
+function overlapColor(skillId: string): string {
+  const degrees = new Map<string, number>();
+  for (const link of liveSkillLinks) {
+    degrees.set(link.sourceId, (degrees.get(link.sourceId) ?? 0) + 1);
+    degrees.set(link.targetId, (degrees.get(link.targetId) ?? 0) + 1);
+  }
+
+  const degree = degrees.get(skillId) ?? 0;
+  const maxDegree = Math.max(1, ...degrees.values());
+  const t = maxDegree <= 1 ? 0 : degree / maxDegree;
+  return mixHex('#8A94A6', '#FF8A3D', t);
+}
+
+function mixHex(left: string, right: string, t: number): string {
+  const clamped = clamp(t, 0, 1);
+  const [lr, lg, lb] = hexToRgb(left);
+  const [rr, rg, rb] = hexToRgb(right);
+  const mixed = [
+    Math.round(lr + (rr - lr) * clamped),
+    Math.round(lg + (rg - lg) * clamped),
+    Math.round(lb + (rb - lb) * clamped)
+  ];
+  return `#${mixed.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function hexToRgb(value: string): [number, number, number] {
+  const normalized = value.replace('#', '');
+  const r = parseInt(normalized.slice(0, 2), 16);
+  const g = parseInt(normalized.slice(2, 4), 16);
+  const b = parseInt(normalized.slice(4, 6), 16);
+  return [r, g, b];
+}
+
+function readGraphPrefs(): {
+  colorMode?: 'category' | 'overlap';
+  categoryColors?: Record<string, string>;
+} {
+  try {
+    const raw = window.localStorage.getItem('skill-map.graph-prefs.v1');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as {
+      colorMode?: 'category' | 'overlap';
+      categoryColors?: Record<string, string>;
+    };
+    return {
+      colorMode: parsed.colorMode === 'overlap' ? 'overlap' : parsed.colorMode === 'category' ? 'category' : undefined,
+      categoryColors: parsed.categoryColors ?? {}
+    };
+  } catch {
+    return {};
+  }
+}
+
+function persistGraphPrefs(): void {
+  try {
+    window.localStorage.setItem('skill-map.graph-prefs.v1', JSON.stringify({
+      colorMode: graphColorMode,
+      categoryColors: graphCategoryColors
+    }));
+  } catch {
+    // Ignore persistence failures inside the webview.
+  }
 }
 
 function roundRect(

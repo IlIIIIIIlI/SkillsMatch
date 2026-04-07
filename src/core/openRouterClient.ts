@@ -1,4 +1,4 @@
-import type { SkillInsight, SkillRecord } from '../shared/types';
+import type { OpenRouterModelSummary, SkillInsight, SkillRecord } from '../shared/types';
 import { ALLOWED_CATEGORIES } from './constants';
 import { buildHeuristicInsight, normalizeInsight } from './classification';
 import { chunk } from './utils';
@@ -18,8 +18,52 @@ interface OpenRouterResponse {
   }>;
 }
 
+interface OpenRouterModelsResponse {
+  data?: Array<{
+    id?: string;
+    name?: string;
+    context_length?: number;
+  }>;
+}
+
 export class OpenRouterClient {
   public constructor(private readonly config: OpenRouterConfig) {}
+
+  public static async listModels(input: {
+    baseUrl: string;
+    apiKey?: string;
+  }): Promise<OpenRouterModelSummary[]> {
+    const endpoint = new URL('models', ensureTrailingSlash(input.baseUrl)).toString();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://github.com',
+      'X-Title': 'Skill Map'
+    };
+
+    if (input.apiKey) {
+      headers.Authorization = `Bearer ${input.apiKey}`;
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'GET',
+      headers
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`OpenRouter model list failed: ${response.status} ${response.statusText} ${text}`);
+    }
+
+    const payload = (await response.json()) as OpenRouterModelsResponse;
+    return (payload.data ?? [])
+      .filter((entry): entry is { id: string; name?: string; context_length?: number } => Boolean(entry.id))
+      .map((entry) => ({
+        id: entry.id,
+        name: entry.name?.trim() || entry.id,
+        contextLength: typeof entry.context_length === 'number' ? entry.context_length : undefined
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
 
   public async enrichSkills(
     skills: SkillRecord[],

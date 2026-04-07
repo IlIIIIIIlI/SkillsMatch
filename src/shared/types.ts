@@ -61,6 +61,12 @@ export interface SkillSnapshot {
   sources: SkillSourceSummary[];
 }
 
+export interface OpenRouterModelSummary {
+  id: string;
+  name: string;
+  contextLength?: number;
+}
+
 export interface SkillFilter {
   scope: 'all' | SkillScope;
   category?: string;
@@ -107,6 +113,8 @@ export type WebviewToExtensionMessage =
   | { type: 'refresh' }
   | { type: 'configureOpenRouterKey' }
   | { type: 'openOpenRouterSettings' }
+  | { type: 'refreshOpenRouterModels' }
+  | { type: 'setOpenRouterModel'; model: string }
   | { type: 'configureLightRagBaseUrl' }
   | { type: 'configureGitHubSources' }
   | { type: 'clearOpenRouterKey' }
@@ -129,6 +137,10 @@ export interface OpenRouterState {
   baseUrl: string;
   model: string;
   keyConfigured: boolean;
+  availableModels: OpenRouterModelSummary[];
+  modelsLoading: boolean;
+  modelsUpdatedAt?: string;
+  modelsError?: string;
 }
 
 export interface LightRagState {
