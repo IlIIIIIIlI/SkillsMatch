@@ -663,6 +663,13 @@ export class SkillCatalogService {
       return;
     }
 
+    const localManifestPath = await this.findMaterializedSkillManifest(skill);
+    if (localManifestPath) {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(localManifestPath));
+      await vscode.window.showTextDocument(document, { preview: false });
+      return;
+    }
+
     await vscode.env.openExternal(vscode.Uri.parse(skill.location));
   }
 
@@ -1170,6 +1177,24 @@ export class SkillCatalogService {
       ?? this.state.projectConfig.workspaces[0];
   }
 
+  private async findMaterializedSkillManifest(skill: SkillRecord): Promise<string | undefined> {
+    const settings = this.readSettings();
+    const preferredWorkspace = this.resolveSelectedWorkspace();
+    const workspaceCandidates = preferredWorkspace
+      ? [preferredWorkspace, ...this.state.projectConfig.workspaces.filter((workspace) => workspace.id !== preferredWorkspace.id)]
+      : [...this.state.projectConfig.workspaces];
+
+    for (const workspace of workspaceCandidates) {
+      const targetRoot = resolveProjectApplyPath(workspace.fsPath, settings.projectApplyRelativePath);
+      const manifestPath = path.join(targetRoot, buildAppliedSkillDirectoryName(skill), 'SKILL.md');
+      if (await pathExists(manifestPath)) {
+        return manifestPath;
+      }
+    }
+
+    return undefined;
+  }
+
   private async offerGitHubRecoveryOptions(message: string): Promise<void> {
     const choice = await vscode.window.showWarningMessage(message, 'Configure GitHub Links', 'Retry Refresh');
     if (choice === 'Configure GitHub Links') {
@@ -1362,6 +1387,15 @@ function hasPromptMismatch(entry: AiCacheEntry, tagPrompt: string, promptHash: s
   }
 
   return tagPrompt.trim().length > 0;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function createSnapshotHash(skills: SkillRecord[]): string {
