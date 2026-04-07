@@ -49,6 +49,7 @@ interface AiCacheEntry {
   tags: string[];
   model?: string;
   generatedAt: string;
+  promptHash?: string;
 }
 
 interface LightRagSyncCacheEntry {
@@ -61,6 +62,9 @@ interface RefreshSettings {
   baseUrl: string;
   model: string;
   batchSize: number;
+  maxSkillsPerRun: number;
+  requestDelayMs: number;
+  tagPrompt: string;
   additionalGlobalPaths: string[];
   timeoutMs: number;
   maxTags: number;
@@ -78,6 +82,7 @@ export class SkillCatalogService {
   private currentRefresh?: Promise<void>;
   private openRouterModelsTask?: Promise<void>;
   private backgroundTagTask?: Promise<void>;
+  private backgroundTagAbortController?: AbortController;
   private knowledgeBaseSyncTask?: Promise<void>;
   private recommendationTask?: Promise<void>;
 
@@ -203,6 +208,51 @@ export class SkillCatalogService {
     this.recomputeDerivedState({ statusMessage: `OpenRouter model set to ${nextModel}. Run Generate AI Tags to refresh cached tags.` });
   }
 
+  public async updateTagGenerationConfig(input: {
+    tagPrompt?: string;
+    batchSize?: number;
+    maxSkillsPerRun?: number;
+    requestDelayMs?: number;
+    autoGenerateTagsOnRefresh?: boolean;
+  }): Promise<void> {
+    const config = vscode.workspace.getConfiguration('skillMap');
+
+    if (typeof input.tagPrompt === 'string') {
+      await config.update('openRouter.tagPrompt', input.tagPrompt, vscode.ConfigurationTarget.Global);
+    }
+    if (typeof input.batchSize === 'number') {
+      await config.update('openRouter.batchSize', clampNumber(input.batchSize, 1, 25), vscode.ConfigurationTarget.Global);
+    }
+    if (typeof input.maxSkillsPerRun === 'number') {
+      await config.update('openRouter.maxSkillsPerRun', clampNumber(input.maxSkillsPerRun, 1, 500), vscode.ConfigurationTarget.Global);
+    }
+    if (typeof input.requestDelayMs === 'number') {
+      await config.update('openRouter.requestDelayMs', clampNumber(input.requestDelayMs, 0, 10_000), vscode.ConfigurationTarget.Global);
+    }
+    if (typeof input.autoGenerateTagsOnRefresh === 'boolean') {
+      await config.update('openRouter.autoGenerateTagsOnRefresh', input.autoGenerateTagsOnRefresh, vscode.ConfigurationTarget.Global);
+    }
+
+    this.refreshRuntimeState(this.state.openRouter.keyConfigured);
+    this.recomputeDerivedState({ statusMessage: 'Tag generation settings updated.' });
+  }
+
+  public stopTagGeneration(): void {
+    if (!this.backgroundTagTask || !this.backgroundTagAbortController) {
+      return;
+    }
+
+    this.state.openRouter = {
+      ...this.state.openRouter,
+      tagGeneration: {
+        ...this.state.openRouter.tagGeneration,
+        stopping: true
+      }
+    };
+    this.emitState();
+    this.backgroundTagAbortController.abort();
+  }
+
   public async configureLightRagBaseUrl(): Promise<void> {
     const settings = this.readSettings();
     const value = await vscode.window.showInputBox({
@@ -270,11 +320,10 @@ export class SkillCatalogService {
 
     const settings = this.readSettings();
     const aiCache = this.readAiCache();
-    const pending = this.state.snapshot.skills.filter((skill) => {
-      const cacheKey = createInsightCacheKey(skill);
-      const cached = aiCache[cacheKey];
-      return !cached || cached.model !== settings.model;
-    });
+    const promptHash = createTagPromptHash(settings.tagPrompt);
+    const pending = this.state.snapshot.skills
+      .filter((skill) => shouldGenerateTagsForSkill(skill, aiCache, settings, promptHash))
+      .slice(0, settings.maxSkillsPerRun);
 
     if (pending.length === 0) {
       if (options.announce) {
@@ -283,42 +332,95 @@ export class SkillCatalogService {
       return;
     }
 
+    const abortController = new AbortController();
+    this.backgroundTagAbortController = abortController;
     const task = Promise.resolve(vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
         title: 'SkillMatch is generating AI tags',
-        cancellable: false
+        cancellable: true
       },
-      async (progress) => {
+      async (progress, token) => {
+        token.onCancellationRequested(() => {
+          abortController.abort();
+        });
+
+        this.state.openRouter = {
+          ...this.state.openRouter,
+          tagGeneration: {
+            ...this.state.openRouter.tagGeneration,
+            running: true,
+            stopping: false,
+            completed: 0,
+            total: pending.length,
+            startedAt: new Date().toISOString()
+          }
+        };
         this.setBusy(true, `Generating AI tags for ${pending.length} skills...`);
 
         const client = new OpenRouterClient({
           apiKey,
           baseUrl: settings.baseUrl,
           model: settings.model,
-          batchSize: settings.batchSize
-        });
-
-        const insights = await client.enrichSkills(pending, (completed, total) => {
-          progress.report({ increment: total === 0 ? 0 : 100 / total, message: `${completed}/${total}` });
+          batchSize: settings.batchSize,
+          tagPrompt: settings.tagPrompt
         });
 
         const mergedCache = { ...aiCache };
-        for (const skill of pending) {
-          const insight = insights.get(skill.id);
-          if (!insight) {
-            continue;
+        let completed = 0;
+        await client.enrichSkills(pending, {
+          signal: abortController.signal,
+          delayMs: settings.requestDelayMs,
+          onProgress: (nextCompleted, total) => {
+            completed = nextCompleted;
+            progress.report({ increment: total === 0 ? 0 : 100 / total, message: `${nextCompleted}/${total}` });
+            this.state.openRouter = {
+              ...this.state.openRouter,
+              tagGeneration: {
+                ...this.state.openRouter.tagGeneration,
+                completed: nextCompleted,
+                total
+              }
+            };
+            this.emitState();
+          },
+          onBatch: async (batch, batchInsights) => {
+            for (const skill of batch) {
+              const insight = batchInsights.get(skill.id);
+              if (!insight) {
+                continue;
+              }
+
+              mergedCache[createInsightCacheKey(skill)] = {
+                category: insight.category,
+                tags: insight.tags,
+                generatedAt: insight.generatedAt,
+                model: settings.model,
+                promptHash
+              };
+            }
+
+            await this.context.globalState.update(AI_CACHE_KEY, mergedCache);
+            this.state.snapshot = this.buildSnapshot(this.state.snapshot.skills, this.state.snapshot.keyConfigured);
+            this.recomputeDerivedState({
+              statusMessage: `Generating AI tags... ${completed}/${pending.length}`
+            });
           }
+        });
 
-          mergedCache[createInsightCacheKey(skill)] = {
-            category: insight.category,
-            tags: insight.tags,
-            generatedAt: insight.generatedAt,
-            model: settings.model
-          };
-        }
-
-        await this.context.globalState.update(AI_CACHE_KEY, mergedCache);
+        this.state.openRouter = {
+          ...this.state.openRouter,
+          pendingTagCount: countPendingTagGeneration(this.state.snapshot.skills, mergedCache, settings, promptHash),
+          tagGeneration: {
+            running: false,
+            stopping: false,
+            completed: pending.length,
+            total: pending.length,
+            startedAt: this.state.openRouter.tagGeneration.startedAt,
+            lastCompletedAt: new Date().toISOString(),
+            lastGeneratedCount: pending.length
+          }
+        };
         this.recomputeDerivedState({
           statusMessage: `Generated AI tags for ${pending.length} skills.`
         });
@@ -331,10 +433,44 @@ export class SkillCatalogService {
 
     this.backgroundTagTask = task
       .catch((error: unknown) => {
+        if (isAbortError(error)) {
+          const { completed, total, startedAt } = this.state.openRouter.tagGeneration;
+          this.state.openRouter = {
+            ...this.state.openRouter,
+            pendingTagCount: countPendingTagGeneration(this.state.snapshot.skills, this.readAiCache(), settings, promptHash),
+            tagGeneration: {
+              running: false,
+              stopping: false,
+              completed,
+              total,
+              startedAt,
+              lastCompletedAt: new Date().toISOString(),
+              lastGeneratedCount: completed
+            }
+          };
+          this.recomputeDerivedState({
+            statusMessage: `Tag generation stopped after ${completed}/${total} skills.`
+          });
+          if (options.announce) {
+            vscode.window.showInformationMessage(`Tag generation stopped after ${completed}/${total} skills.`);
+          }
+          return;
+        }
+
+        this.state.openRouter = {
+          ...this.state.openRouter,
+          tagGeneration: {
+            ...this.state.openRouter.tagGeneration,
+            running: false,
+            stopping: false
+          }
+        };
+        this.emitState();
         vscode.window.showErrorMessage(`SkillMatch failed to generate tags: ${toErrorMessage(error)}`);
       })
       .finally(() => {
         this.backgroundTagTask = undefined;
+        this.backgroundTagAbortController = undefined;
         this.setBusy(false);
       });
 
@@ -707,7 +843,8 @@ export class SkillCatalogService {
           apiKey,
           baseUrl: settings.baseUrl,
           model: settings.model,
-          batchSize: settings.batchSize
+          batchSize: settings.batchSize,
+          tagPrompt: settings.tagPrompt
         })
       : undefined;
 
@@ -815,14 +952,21 @@ export class SkillCatalogService {
 
   private buildSnapshot(skills: SkillRecord[], keyConfigured: boolean): SkillSnapshot {
     const aiCache = this.readAiCache();
+    const settings = this.readSettings();
+    const promptHash = createTagPromptHash(settings.tagPrompt);
     const enrichedSkills: SkillRecord[] = skills.map((skill): SkillRecord => {
-      const insight = aiCache[createInsightCacheKey(skill)] ?? toAiCacheEntry(buildHeuristicInsight(skill));
+      const cached = aiCache[createInsightCacheKey(skill)];
+      const insight = cached ?? toAiCacheEntry(buildHeuristicInsight(skill));
 
       return {
         ...skill,
         category: insight.category,
         tags: insight.tags,
-        tagSource: aiCache[createInsightCacheKey(skill)] ? 'ai' : 'heuristic'
+        tagSource: cached ? 'ai' : 'heuristic',
+        tagGeneratedAt: cached?.generatedAt,
+        tagModel: cached?.model,
+        tagPromptHash: cached?.promptHash,
+        tagPromptStale: cached ? hasPromptMismatch(cached, settings.tagPrompt, promptHash) || cached.model !== settings.model : false
       };
     });
 
@@ -904,6 +1048,12 @@ export class SkillCatalogService {
   private refreshRuntimeState(keyConfigured: boolean): void {
     const settings = this.readSettings();
     const workspaces = this.readWorkspaceFolders();
+    const pendingTagCount = countPendingTagGeneration(
+      this.state.snapshot.skills,
+      this.readAiCache(),
+      settings,
+      createTagPromptHash(settings.tagPrompt)
+    );
     const selectedWorkspaceId = workspaces.some((workspace) => workspace.id === this.state.projectConfig.selectedWorkspaceId)
       ? this.state.projectConfig.selectedWorkspaceId
       : workspaces[0]?.id;
@@ -919,7 +1069,14 @@ export class SkillCatalogService {
       availableModels: ensureCurrentModel(this.state.openRouter.availableModels, settings.model),
       modelsLoading: this.state.openRouter.modelsLoading,
       modelsUpdatedAt: this.state.openRouter.modelsUpdatedAt,
-      modelsError: this.state.openRouter.modelsError
+      modelsError: this.state.openRouter.modelsError,
+      pendingTagCount,
+      tagPrompt: settings.tagPrompt,
+      tagBatchSize: settings.batchSize,
+      tagMaxSkillsPerRun: settings.maxSkillsPerRun,
+      tagRequestDelayMs: settings.requestDelayMs,
+      autoGenerateTagsOnRefresh: settings.autoGenerateTagsOnRefresh,
+      tagGeneration: this.state.openRouter.tagGeneration
     };
     this.state.onlineSources = {
       ...this.state.onlineSources,
@@ -944,6 +1101,9 @@ export class SkillCatalogService {
       baseUrl: config.get<string>('openRouter.baseUrl', 'https://openrouter.ai/api/v1'),
       model: config.get<string>('openRouter.model', 'openai/gpt-4.1-mini'),
       batchSize: config.get<number>('openRouter.batchSize', 8),
+      maxSkillsPerRun: config.get<number>('openRouter.maxSkillsPerRun', 24),
+      requestDelayMs: config.get<number>('openRouter.requestDelayMs', 0),
+      tagPrompt: config.get<string>('openRouter.tagPrompt', ''),
       autoGenerateTagsOnRefresh: config.get<boolean>('openRouter.autoGenerateTagsOnRefresh', true),
       additionalGlobalPaths: config.get<string[]>('scan.additionalGlobalPaths', []),
       timeoutMs: config.get<number>('onlineSources.timeoutMs', 12000),
@@ -1056,7 +1216,19 @@ function emptyViewState(): ViewState {
       model: 'openai/gpt-4.1-mini',
       keyConfigured: false,
       availableModels: [{ id: 'openai/gpt-4.1-mini', name: 'openai/gpt-4.1-mini' }],
-      modelsLoading: false
+      modelsLoading: false,
+      pendingTagCount: 0,
+      tagPrompt: '',
+      tagBatchSize: 8,
+      tagMaxSkillsPerRun: 24,
+      tagRequestDelayMs: 0,
+      autoGenerateTagsOnRefresh: true,
+      tagGeneration: {
+        running: false,
+        stopping: false,
+        completed: 0,
+        total: 0
+      }
     },
     lightRag: {
       baseUrl: 'http://127.0.0.1:9621',
@@ -1105,6 +1277,46 @@ function toAiCacheEntry(insight: SkillInsight): AiCacheEntry {
     generatedAt: insight.generatedAt,
     model: insight.model
   };
+}
+
+function createTagPromptHash(prompt: string): string {
+  return hashText(prompt.trim());
+}
+
+function shouldGenerateTagsForSkill(
+  skill: Pick<SkillRecord, 'name' | 'description'>,
+  aiCache: Record<string, AiCacheEntry>,
+  settings: RefreshSettings,
+  promptHash: string
+): boolean {
+  const cacheKey = createInsightCacheKey(skill);
+  const cached = aiCache[cacheKey];
+  return !cached || cached.model !== settings.model || hasPromptMismatch(cached, settings.tagPrompt, promptHash);
+}
+
+function countPendingTagGeneration(
+  skills: readonly Pick<SkillRecord, 'name' | 'description'>[],
+  aiCache: Record<string, AiCacheEntry>,
+  settings: RefreshSettings,
+  promptHash: string
+): number {
+  return skills.filter((skill) => shouldGenerateTagsForSkill(skill, aiCache, settings, promptHash)).length;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function hasPromptMismatch(entry: AiCacheEntry, tagPrompt: string, promptHash: string): boolean {
+  if (entry.promptHash) {
+    return entry.promptHash !== promptHash;
+  }
+
+  return tagPrompt.trim().length > 0;
 }
 
 function createSnapshotHash(skills: SkillRecord[]): string {

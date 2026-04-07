@@ -56,6 +56,12 @@ export class OverviewWebviewSession implements vscode.Disposable {
       case 'setOpenRouterModel':
         await this.service.setOpenRouterModel(message.model);
         break;
+      case 'updateTagGenerationConfig':
+        await this.service.updateTagGenerationConfig(message.config);
+        break;
+      case 'stopTagGeneration':
+        this.service.stopTagGeneration();
+        break;
       case 'configureLightRagBaseUrl':
         await this.service.configureLightRagBaseUrl();
         break;
@@ -299,6 +305,44 @@ export class OverviewWebviewSession implements vscode.Disposable {
         padding: 6px 10px;
         background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
         color: inherit;
+      }
+      .setup-input,
+      .setup-textarea {
+        width: 100%;
+        min-width: 0;
+        border-radius: 8px;
+        border: 1px solid var(--panel-border);
+        padding: 6px 10px;
+        background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+        color: inherit;
+        font: inherit;
+      }
+      .setup-textarea {
+        min-height: 108px;
+        resize: vertical;
+        line-height: 1.45;
+      }
+      .tag-config-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 8px;
+      }
+      .setup-field-checkbox {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+      }
+      .setup-field-checkbox input {
+        margin: 0;
+      }
+      .setup-meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
       }
       .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
       .setup-foot { font-size: 11px; opacity: 0.62; }

@@ -80,6 +80,11 @@ let graphColorMode: 'category' | 'overlap' = graphPrefs.colorMode ?? 'category';
 let graphCategoryColors: Record<string, string> = graphPrefs.categoryColors ?? {};
 let hoveredNodeId: string | undefined;
 let hoverPointer: { x: number; y: number } | undefined;
+let tagPromptDraft: string | undefined;
+let tagBatchSizeDraft: number | undefined;
+let tagMaxSkillsDraft: number | undefined;
+let tagDelayDraft: number | undefined;
+let tagAutoDraft: boolean | undefined;
 
 interface SplitterDragState {
   type: 'horizontal' | 'vertical';
@@ -139,6 +144,7 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
       focusedNodeId = undefined;
     }
     state = message.state;
+    syncTagGenerationDraftsFromState(message.state);
     vscode.setState(state);
     if (isSelectionEchoState(previousState, message.state)) {
       pendingSelectionEchoKey = null;
@@ -153,6 +159,9 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
 });
 
 vscode.postMessage({ type: 'ready' });
+if (state) {
+  syncTagGenerationDraftsFromState(state);
+}
 rebuildGraph();
 render();
 
@@ -173,6 +182,17 @@ function render(): void {
   graphMinSharedTags = clamp(graphMinSharedTags, 1, graphMaxSharedTags);
   const currentOpenRouterModel = s.openRouter.availableModels.find((model) => model.id === s.openRouter.model);
   const openRouterModelTitle = currentOpenRouterModel?.name ?? s.openRouter.model;
+  const tagGeneration = s.openRouter.tagGeneration;
+  const tagGenerationStatus = tagGeneration.running
+    ? `${tagGeneration.stopping ? 'Stopping' : 'Generating'} ${tagGeneration.completed}/${tagGeneration.total}`
+    : s.openRouter.pendingTagCount > 0
+      ? `${s.openRouter.pendingTagCount} skills pending`
+      : 'No pending skills';
+  const tagPromptValue = tagPromptDraft ?? s.openRouter.tagPrompt;
+  const tagBatchSizeValue = tagBatchSizeDraft ?? s.openRouter.tagBatchSize;
+  const tagMaxSkillsValue = tagMaxSkillsDraft ?? s.openRouter.tagMaxSkillsPerRun;
+  const tagDelayValue = tagDelayDraft ?? s.openRouter.tagRequestDelayMs;
+  const tagAutoValue = tagAutoDraft ?? s.openRouter.autoGenerateTagsOnRefresh;
   const openRouterModelOptionsHtml = s.openRouter.availableModels
     .map((model) => {
       const labelParts = [model.name];
@@ -293,8 +313,7 @@ function render(): void {
     ${skill.tags.map((t) => `<button class="tag ${selectedTag === t ? 'active-tag' : ''}" data-action="select-tag" data-tag="${escapeAttribute(t)}">${escapeHtml(t)}</button>`).join('')}
   </div>
   <div class="card-meta-full">
-    <span class="pill" title="${escapeAttribute(skill.sourceLabel)}">${escapeHtml(truncateMiddle(skill.sourceLabel, 52))}</span>
-    <span class="pill">${escapeHtml(skill.tagSource)} tags</span>
+    ${buildSkillTagMetaHtml(skill)}
   </div>
 </div>` : '';
 
@@ -338,7 +357,8 @@ function render(): void {
     <button class="icon-btn" data-action="toggle-settings" title="Settings">⚙</button>
     <div class="settings-popover ${settingsOpen ? 'open' : ''}">
       <button class="btn" data-action="refresh">${s.busy ? 'Refreshing…' : 'Refresh'}</button>
-      <button class="btn" data-action="generate-tags">Generate AI Tags</button>
+      <button class="btn" data-action="generate-tags" ${tagGeneration.running ? 'disabled' : ''}>${tagGeneration.running ? 'Generating…' : 'Generate AI Tags'}</button>
+      ${tagGeneration.running ? `<button class="btn" data-action="stop-tag-generation">${tagGeneration.stopping ? 'Stopping…' : 'Stop Tag Generation'}</button>` : ''}
       <button class="btn" data-action="configure-key">${s.snapshot.keyConfigured ? 'Rotate OpenRouter Key' : 'Configure OpenRouter Key'}</button>
       ${s.snapshot.keyConfigured ? '<button class="btn" data-action="clear-key">Clear Key</button>' : ''}
       <button class="btn" data-action="clear-filter">Clear All Filters</button>
@@ -370,9 +390,43 @@ function render(): void {
         ${openRouterModelOptionsHtml}
       </select>
     </label>
+    <div class="tag-config-grid">
+      <label class="setup-field">
+        <span class="setup-field-label">Batch size</span>
+        <input id="tag-batch-size" class="setup-input" type="number" min="1" max="25" value="${tagBatchSizeValue}" />
+      </label>
+      <label class="setup-field">
+        <span class="setup-field-label">Max skills / run</span>
+        <input id="tag-max-skills" class="setup-input" type="number" min="1" max="500" value="${tagMaxSkillsValue}" />
+      </label>
+      <label class="setup-field">
+        <span class="setup-field-label">Delay between batches (ms)</span>
+        <input id="tag-request-delay" class="setup-input" type="number" min="0" max="10000" step="50" value="${tagDelayValue}" />
+      </label>
+      <label class="setup-field setup-field-checkbox">
+        <span class="setup-field-label">Auto generate on refresh</span>
+        <input id="tag-auto-generate" type="checkbox" ${tagAutoValue ? 'checked' : ''} />
+      </label>
+    </div>
+    <label class="setup-field">
+      <span class="setup-field-label">Tag generation prompt additions</span>
+      <textarea
+        id="tag-prompt"
+        class="setup-textarea"
+        placeholder="Example: Prioritize implementation details, tool names, frameworks, and avoid generic tags."
+      >${escapeHtml(tagPromptValue)}</textarea>
+    </label>
+    <div class="setup-meta-row">
+      <span class="pill">${escapeHtml(tagGenerationStatus)}</span>
+      ${tagGeneration.lastCompletedAt ? `<span class="pill">Last run ${escapeHtml(formatDateTime(tagGeneration.lastCompletedAt))}</span>` : ''}
+      <span class="pill">${s.openRouter.pendingTagCount} pending</span>
+    </div>
     <div class="setup-actions">
       <button class="btn primary" data-action="configure-key">${s.openRouter.keyConfigured ? 'Rotate Key' : 'Configure Key'}</button>
       <button class="btn" data-action="refresh-openrouter-models">${s.openRouter.modelsLoading ? 'Loading Models…' : 'Refresh Models'}</button>
+      <button class="btn" data-action="save-tag-config">Save Tag Settings</button>
+      <button class="btn" data-action="generate-tags" ${tagGeneration.running ? 'disabled' : ''}>${tagGeneration.running ? 'Generating…' : 'Generate Pending Tags'}</button>
+      ${tagGeneration.running ? `<button class="btn" data-action="stop-tag-generation">${tagGeneration.stopping ? 'Stopping…' : 'Stop'}</button>` : ''}
     </div>
     <div class="setup-foot">
       ${escapeHtml(truncateMiddle(s.openRouter.baseUrl, 48))}
@@ -381,6 +435,7 @@ function render(): void {
         : s.openRouter.modelsUpdatedAt
           ? ` · ${s.openRouter.availableModels.length} models loaded`
           : ''}
+      ${tagPromptValue.trim() ? ' · custom prompt active' : ''}
     </div>
   </article>
 
@@ -537,6 +592,24 @@ ${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertica
 }
 
 // ── Graph: live D3 simulation ────────────────────────────────────────────────
+
+function syncTagGenerationDraftsFromState(nextState: ViewState): void {
+  if (typeof tagPromptDraft === 'undefined') {
+    tagPromptDraft = nextState.openRouter.tagPrompt;
+  }
+  if (typeof tagBatchSizeDraft === 'undefined') {
+    tagBatchSizeDraft = nextState.openRouter.tagBatchSize;
+  }
+  if (typeof tagMaxSkillsDraft === 'undefined') {
+    tagMaxSkillsDraft = nextState.openRouter.tagMaxSkillsPerRun;
+  }
+  if (typeof tagDelayDraft === 'undefined') {
+    tagDelayDraft = nextState.openRouter.tagRequestDelayMs;
+  }
+  if (typeof tagAutoDraft === 'undefined') {
+    tagAutoDraft = nextState.openRouter.autoGenerateTagsOnRefresh;
+  }
+}
 
 function buildSkillOverlapGraph(skills: SkillRecord[]): { skills: SkillRecord[]; links: SkillLink[]; maxSharedTags: number } {
   const MAX_GRAPH_SKILLS = 120;
@@ -1281,6 +1354,23 @@ function bindDomEvents(): void {
           settingsOpen = false;
           vscode.postMessage({ type: 'refreshOpenRouterModels' });
           break;
+        case 'save-tag-config':
+          settingsOpen = false;
+          vscode.postMessage({
+            type: 'updateTagGenerationConfig',
+            config: {
+              tagPrompt: (tagPromptDraft ?? '').trim(),
+              batchSize: clamp(Math.round(tagBatchSizeDraft ?? 8), 1, 25),
+              maxSkillsPerRun: clamp(Math.round(tagMaxSkillsDraft ?? 24), 1, 500),
+              requestDelayMs: clamp(Math.round(tagDelayDraft ?? 0), 0, 10_000),
+              autoGenerateTagsOnRefresh: Boolean(tagAutoDraft)
+            }
+          });
+          break;
+        case 'stop-tag-generation':
+          settingsOpen = false;
+          vscode.postMessage({ type: 'stopTagGeneration' });
+          break;
         case 'reset-category-colors':
           graphCategoryColors = {};
           persistGraphPrefs();
@@ -1451,6 +1541,31 @@ function bindDomEvents(): void {
     const nextModel = (e.target as HTMLSelectElement).value;
     if (!nextModel || nextModel === state?.openRouter.model) return;
     vscode.postMessage({ type: 'setOpenRouterModel', model: nextModel });
+  });
+
+  const tagPromptInput = document.getElementById('tag-prompt') as HTMLTextAreaElement | null;
+  tagPromptInput?.addEventListener('input', (e) => {
+    tagPromptDraft = (e.target as HTMLTextAreaElement).value;
+  });
+
+  const tagBatchSizeInput = document.getElementById('tag-batch-size') as HTMLInputElement | null;
+  tagBatchSizeInput?.addEventListener('input', (e) => {
+    tagBatchSizeDraft = clamp(Number((e.target as HTMLInputElement).value) || 1, 1, 25);
+  });
+
+  const tagMaxSkillsInput = document.getElementById('tag-max-skills') as HTMLInputElement | null;
+  tagMaxSkillsInput?.addEventListener('input', (e) => {
+    tagMaxSkillsDraft = clamp(Number((e.target as HTMLInputElement).value) || 1, 1, 500);
+  });
+
+  const tagDelayInput = document.getElementById('tag-request-delay') as HTMLInputElement | null;
+  tagDelayInput?.addEventListener('input', (e) => {
+    tagDelayDraft = clamp(Number((e.target as HTMLInputElement).value) || 0, 0, 10_000);
+  });
+
+  const tagAutoInput = document.getElementById('tag-auto-generate') as HTMLInputElement | null;
+  tagAutoInput?.addEventListener('change', (e) => {
+    tagAutoDraft = (e.target as HTMLInputElement).checked;
   });
 
   const graphColorModeSelect = document.getElementById('graph-color-mode') as HTMLSelectElement | null;
@@ -1774,6 +1889,25 @@ function getSharedTagsBetweenSkillIds(leftSkillId: string, rightSkillId: string)
   return left.tags.filter((tag) => rightTags.has(tag)).sort((a, b) => a.localeCompare(b));
 }
 
+function buildSkillTagMetaHtml(skill: SkillRecord): string {
+  const meta: string[] = [
+    `<span class="pill" title="${escapeAttribute(skill.sourceLabel)}">${escapeHtml(truncateMiddle(skill.sourceLabel, 52))}</span>`,
+    `<span class="pill">${escapeHtml(skill.tagSource)} tags</span>`
+  ];
+
+  if (skill.tagGeneratedAt) {
+    meta.push(`<span class="pill">Updated ${escapeHtml(formatDateTime(skill.tagGeneratedAt))}</span>`);
+  }
+  if (skill.tagModel) {
+    meta.push(`<span class="pill" title="${escapeAttribute(skill.tagModel)}">${escapeHtml(truncateMiddle(skill.tagModel, 28))}</span>`);
+  }
+  if (skill.tagSource === 'ai') {
+    meta.push(`<span class="pill">${skill.tagPromptStale ? 'Prompt changed since run' : 'Prompt current'}</span>`);
+  }
+
+  return meta.join('');
+}
+
 function buildGraphHoverTooltipHtml(skillId: string): string {
   const skill = getSkillRecordById(skillId);
   if (!skill) return '';
@@ -1958,7 +2092,7 @@ function updateSkillListOnly(): void {
     ${skill.tags.map((t) => `<button class="tag ${selectedTag === t ? 'active-tag' : ''}" data-action="select-tag" data-tag="${escapeAttribute(t)}">${escapeHtml(t)}</button>`).join('')}
   </div>
   <div class="card-meta-full">
-    <span class="pill" title="${escapeAttribute(skill.sourceLabel)}">${escapeHtml(truncateMiddle(skill.sourceLabel, 52))}</span>
+    ${buildSkillTagMetaHtml(skill)}
   </div>
 </div>` : '';
         return `<article class="skill-card ${isActive ? 'active' : ''} ${isExpanded ? 'expanded' : ''} ${isSelected ? 'selected-card' : ''}" data-action="toggle-skill" data-skill-id="${skill.id}">
@@ -2171,6 +2305,14 @@ function truncateMiddle(v: string, len: number): string {
   const head = Math.ceil(visible * 0.58);
   const tail = Math.max(4, visible - head);
   return `${v.slice(0, head)}…${v.slice(-tail)}`;
+}
+
+function formatDateTime(value: string): string {
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
 }
 
 function escapeAttribute(v: string): string {

@@ -133,6 +133,25 @@
           "maximum": 25,
           "description": "Number of skills sent in a single OpenRouter enrichment request."
         },
+        "skillMap.openRouter.maxSkillsPerRun": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum number of skills processed in one Generate AI Tags run."
+        },
+        "skillMap.openRouter.requestDelayMs": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Delay in milliseconds inserted between OpenRouter tag-generation batches."
+        },
+        "skillMap.openRouter.tagPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Additional instructions appended to the built-in SkillMatch tag-generation prompt."
+        },
         "skillMap.scan.additionalGlobalPaths": {
           "type": "array",
           "default": [],

@@ -21,6 +21,10 @@ export interface SkillRecord {
   workspaceFolderName?: string;
   relativePath?: string;
   lastSyncedAt: string;
+  tagGeneratedAt?: string;
+  tagModel?: string;
+  tagPromptHash?: string;
+  tagPromptStale?: boolean;
 }
 
 export interface SkillInsight {
@@ -115,6 +119,17 @@ export type WebviewToExtensionMessage =
   | { type: 'openOpenRouterSettings' }
   | { type: 'refreshOpenRouterModels' }
   | { type: 'setOpenRouterModel'; model: string }
+  | {
+      type: 'updateTagGenerationConfig';
+      config: {
+        tagPrompt?: string;
+        batchSize?: number;
+        maxSkillsPerRun?: number;
+        requestDelayMs?: number;
+        autoGenerateTagsOnRefresh?: boolean;
+      };
+    }
+  | { type: 'stopTagGeneration' }
   | { type: 'configureLightRagBaseUrl' }
   | { type: 'configureGitHubSources' }
   | { type: 'clearOpenRouterKey' }
@@ -141,6 +156,23 @@ export interface OpenRouterState {
   modelsLoading: boolean;
   modelsUpdatedAt?: string;
   modelsError?: string;
+  pendingTagCount: number;
+  tagPrompt: string;
+  tagBatchSize: number;
+  tagMaxSkillsPerRun: number;
+  tagRequestDelayMs: number;
+  autoGenerateTagsOnRefresh: boolean;
+  tagGeneration: TagGenerationState;
+}
+
+export interface TagGenerationState {
+  running: boolean;
+  stopping: boolean;
+  completed: number;
+  total: number;
+  startedAt?: string;
+  lastCompletedAt?: string;
+  lastGeneratedCount?: number;
 }
 
 export interface LightRagState {

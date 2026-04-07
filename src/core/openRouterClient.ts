@@ -8,6 +8,7 @@ interface OpenRouterConfig {
   baseUrl: string;
   model: string;
   batchSize: number;
+  tagPrompt: string;
 }
 
 interface OpenRouterResponse {
@@ -67,18 +68,29 @@ export class OpenRouterClient {
 
   public async enrichSkills(
     skills: SkillRecord[],
-    onProgress?: (completed: number, total: number) => void
+    options?: {
+      signal?: AbortSignal;
+      delayMs?: number;
+      onProgress?: (completed: number, total: number) => void;
+      onBatch?: (batch: SkillRecord[], insights: Map<string, SkillInsight>) => Promise<void> | void;
+    }
   ): Promise<Map<string, SkillInsight>> {
     const insights = new Map<string, SkillInsight>();
     const batches = chunk(skills, this.config.batchSize);
     let completed = 0;
 
     for (const batch of batches) {
-      const batchInsights = await this.enrichBatch(batch);
+      throwIfAborted(options?.signal);
+      const batchInsights = await this.enrichBatch(batch, options?.signal);
       for (const [skillId, insight] of batchInsights.entries()) {
         insights.set(skillId, insight);
         completed += 1;
-        onProgress?.(completed, skills.length);
+        options?.onProgress?.(completed, skills.length);
+      }
+      await options?.onBatch?.(batch, batchInsights);
+
+      if (options?.delayMs && completed < skills.length) {
+        await sleepWithAbort(options.delayMs, options.signal);
       }
     }
 
@@ -168,10 +180,11 @@ export class OpenRouterClient {
     };
   }
 
-  private async enrichBatch(skills: SkillRecord[]): Promise<Map<string, SkillInsight>> {
+  private async enrichBatch(skills: SkillRecord[], signal?: AbortSignal): Promise<Map<string, SkillInsight>> {
     const endpoint = new URL('chat/completions', ensureTrailingSlash(this.config.baseUrl)).toString();
     const response = await fetch(endpoint, {
       method: 'POST',
+      signal,
       headers: {
         'Authorization': `Bearer ${this.config.apiKey}`,
         'Content-Type': 'application/json',
@@ -187,13 +200,7 @@ export class OpenRouterClient {
         messages: [
           {
             role: 'system',
-            content: [
-              'You classify AI agent skills for a VS Code catalog.',
-              `Use only these categories: ${ALLOWED_CATEGORIES.join(', ')}.`,
-              'Return JSON only in the shape {"skills":[{"id":"...","category":"...","tags":["..."]}]}.',
-              'Generate exactly 20 concise tags per skill.',
-              'Tags must be lowercase, 1 to 3 words, specific, and unique within each skill.'
-            ].join(' ')
+            content: buildTagGenerationPrompt(this.config.tagPrompt)
           },
           {
             role: 'user',
@@ -248,6 +255,23 @@ function extractJson(content: string): unknown {
   return JSON.parse(content.slice(firstBrace, lastBrace + 1));
 }
 
+function buildTagGenerationPrompt(tagPrompt: string): string {
+  const base = [
+    'You classify AI agent skills for a VS Code catalog.',
+    `Use only these categories: ${ALLOWED_CATEGORIES.join(', ')}.`,
+    'Return JSON only in the shape {"skills":[{"id":"...","category":"...","tags":["..."]}]}.',
+    'Generate exactly 20 concise tags per skill.',
+    'Tags must be lowercase, 1 to 3 words, specific, and unique within each skill.'
+  ];
+
+  const custom = tagPrompt.trim();
+  if (custom) {
+    base.push(`Additional SkillMatch instructions: ${custom}`);
+  }
+
+  return base.join(' ');
+}
+
 function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
 }
@@ -258,4 +282,32 @@ function normalizeScore(value: number | undefined): number {
   }
 
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  }
+}
+
+function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+
+    const onAbort = () => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
