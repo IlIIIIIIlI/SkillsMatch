@@ -56,6 +56,11 @@ export interface LightRagDocumentInventory {
   statusCounts: Record<string, number>;
 }
 
+export interface LightRagTrackStatus {
+  totalCount: number;
+  statusCounts: Record<string, number>;
+}
+
 export function normalizeLightRagBaseUrl(value: string): string {
   const trimmed = value.trim() || 'http://127.0.0.1:9621';
 
@@ -155,13 +160,21 @@ export class LightRagClient {
     };
   }
 
+  public async getTrackStatus(trackId: string): Promise<LightRagTrackStatus> {
+    const payload = await this.requestJson<TrackStatusResponse>(`/documents/track_status/${encodeURIComponent(trackId)}`);
+    return {
+      totalCount: payload.total_count ?? 0,
+      statusCounts: payload.status_summary ?? {}
+    };
+  }
+
   public async waitForTrack(trackId: string, expectedCount: number, timeoutMs: number): Promise<void> {
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < timeoutMs) {
-      const payload = await this.requestJson<TrackStatusResponse>(`/documents/track_status/${encodeURIComponent(trackId)}`);
-      const statusSummary = payload.status_summary ?? {};
-      const totalCount = payload.total_count ?? 0;
+      const payload = await this.getTrackStatus(trackId);
+      const statusSummary = payload.statusCounts;
+      const totalCount = payload.totalCount;
       const pendingCount =
         (statusSummary.pending ?? 0) +
         (statusSummary.processing ?? 0) +

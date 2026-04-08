@@ -23,7 +23,12 @@ import {
   OPENROUTER_SECRET_KEY
 } from './constants';
 import { parseConfiguredGitHubSourceUrls, splitGitHubSourceInput } from './githubSourceConfig';
-import { type LightRagDocumentInventory, LightRagClient, normalizeLightRagBaseUrl } from './lightRagClient';
+import {
+  type LightRagDocumentInventory,
+  type LightRagTrackStatus,
+  LightRagClient,
+  normalizeLightRagBaseUrl
+} from './lightRagClient';
 import { discoverLocalSkills } from './localSkillDiscovery';
 import { OpenRouterClient } from './openRouterClient';
 import { discoverOnlineSkills } from './onlineSkillDiscovery';
@@ -58,6 +63,7 @@ interface LightRagSyncCacheEntry {
   snapshotHash: string;
   syncedAt: string;
   skillCount: number;
+  trackId?: string;
 }
 
 const APPLIED_SKILL_METADATA_FILE = '.skillmatch-source.json';
@@ -776,6 +782,8 @@ export class SkillCatalogService {
     const snapshotHash = createSnapshotHash(this.state.snapshot.skills);
     const syncCache = this.readLightRagSyncCache();
     const cacheEntry = syncCache[this.state.lightRag.workspace];
+    let lastTrackId = cacheEntry?.trackId;
+    const expectedSkillCount = this.state.snapshot.skills.length;
     const expectedFileSources = this.state.snapshot.skills
       .map((skill) => buildKnowledgeBaseFileSource(skill))
       .sort((left, right) => left.localeCompare(right));
@@ -799,6 +807,49 @@ export class SkillCatalogService {
       });
 
       await client.getStatus();
+      if (!options.force && cacheEntry?.trackId) {
+        const trackStatus = await this.readRemoteTrackStatus(client, cacheEntry.trackId);
+        if (trackStatus && trackStatusIndicatesWorkInProgress(trackStatus, expectedSkillCount)) {
+          try {
+            await client.waitForTrack(cacheEntry.trackId, expectedSkillCount, settings.lightRagSyncTimeoutMs);
+          } catch (error) {
+            if (isLightRagTrackTimeout(error)) {
+              this.state.lightRag = {
+                ...this.state.lightRag,
+                ready: true,
+                syncing: false,
+                syncedAt: cacheEntry.syncedAt,
+                statusMessage: buildLightRagBackgroundIndexingMessage(expectedSkillCount, trackStatus)
+              };
+              this.emitState();
+              return;
+            }
+            throw error;
+          }
+
+          const completedAt = new Date().toISOString();
+          const nextCache = {
+            ...syncCache,
+            [this.state.lightRag.workspace]: {
+              snapshotHash,
+              syncedAt: completedAt,
+              skillCount: expectedSkillCount,
+              trackId: lastTrackId
+            }
+          };
+          await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            ready: true,
+            syncing: false,
+            syncedAt: completedAt,
+            statusMessage: `LightRAG synced ${expectedSkillCount} skills.`
+          };
+          this.emitState();
+          return;
+        }
+      }
+
       if (!options.force) {
         const remoteInventory = await this.readRemoteKnowledgeBaseInventory(client);
         if (remoteInventory && remoteKnowledgeBaseMatchesExpected(expectedFileSources, remoteInventory)) {
@@ -808,7 +859,8 @@ export class SkillCatalogService {
             [this.state.lightRag.workspace]: {
               snapshotHash,
               syncedAt,
-              skillCount: this.state.snapshot.skills.length
+              skillCount: expectedSkillCount,
+              trackId: lastTrackId
             }
           };
           await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
@@ -818,13 +870,13 @@ export class SkillCatalogService {
             ready: true,
             syncing: false,
             syncedAt,
-            statusMessage: buildRemoteKnowledgeBaseStatusMessage(this.state.snapshot.skills.length, remoteInventory)
+            statusMessage: buildRemoteKnowledgeBaseStatusMessage(expectedSkillCount, remoteInventory)
           };
           this.emitState();
 
           if (options.announce) {
             vscode.window.showInformationMessage(
-              `LightRAG already has matching ${this.state.snapshot.skills.length} skills. Skipped sync.`
+              `LightRAG already has matching ${expectedSkillCount} skills. Skipped sync.`
             );
           }
           return;
@@ -854,7 +906,35 @@ export class SkillCatalogService {
         );
 
         if (insertResult.trackId) {
-          await client.waitForTrack(insertResult.trackId, documents.length, settings.lightRagSyncTimeoutMs);
+          lastTrackId = insertResult.trackId;
+          const pendingCache = {
+            ...syncCache,
+            [this.state.lightRag.workspace]: {
+              snapshotHash,
+              syncedAt: new Date().toISOString(),
+              skillCount: expectedSkillCount,
+              trackId: lastTrackId
+            }
+          };
+          await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, pendingCache);
+
+          try {
+            await client.waitForTrack(insertResult.trackId, documents.length, settings.lightRagSyncTimeoutMs);
+          } catch (error) {
+            if (isLightRagTrackTimeout(error)) {
+              const trackStatus = await this.readRemoteTrackStatus(client, insertResult.trackId);
+              this.state.lightRag = {
+                ...this.state.lightRag,
+                ready: true,
+                syncing: false,
+                syncedAt: pendingCache[this.state.lightRag.workspace]?.syncedAt,
+                statusMessage: buildLightRagBackgroundIndexingMessage(expectedSkillCount, trackStatus)
+              };
+              this.emitState();
+              return;
+            }
+            throw error;
+          }
         }
       }
 
@@ -863,7 +943,8 @@ export class SkillCatalogService {
         [this.state.lightRag.workspace]: {
           snapshotHash,
           syncedAt: new Date().toISOString(),
-          skillCount: this.state.snapshot.skills.length
+          skillCount: expectedSkillCount,
+          trackId: lastTrackId
         }
       };
       await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
@@ -873,12 +954,12 @@ export class SkillCatalogService {
         ready: true,
         syncing: false,
         syncedAt: nextCache[this.state.lightRag.workspace]?.syncedAt,
-        statusMessage: `LightRAG synced ${this.state.snapshot.skills.length} skills.`
+        statusMessage: `LightRAG synced ${expectedSkillCount} skills.`
       };
       this.emitState();
 
       if (options.announce) {
-        vscode.window.showInformationMessage(`LightRAG synced ${this.state.snapshot.skills.length} skills.`);
+        vscode.window.showInformationMessage(`LightRAG synced ${expectedSkillCount} skills.`);
       }
     } catch (error) {
       const message = `LightRAG sync failed: ${toErrorMessage(error)}`;
@@ -902,6 +983,14 @@ export class SkillCatalogService {
   private async readRemoteKnowledgeBaseInventory(client: LightRagClient): Promise<LightRagDocumentInventory | undefined> {
     try {
       return await client.getDocumentInventory();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async readRemoteTrackStatus(client: LightRagClient, trackId: string): Promise<LightRagTrackStatus | undefined> {
+    try {
+      return await client.getTrackStatus(trackId);
     } catch {
       return undefined;
     }
@@ -1590,6 +1679,29 @@ function buildRemoteKnowledgeBaseStatusMessage(skillCount: number, remoteInvento
   return `LightRAG already has matching ${skillCount} skills. Skipped sync.`;
 }
 
+function trackStatusIndicatesWorkInProgress(trackStatus: LightRagTrackStatus, expectedSkillCount: number): boolean {
+  const pendingCount =
+    (trackStatus.statusCounts.pending ?? 0) +
+    (trackStatus.statusCounts.processing ?? 0) +
+    (trackStatus.statusCounts.preprocessed ?? 0);
+
+  return trackStatus.totalCount >= expectedSkillCount && pendingCount > 0;
+}
+
+function buildLightRagBackgroundIndexingMessage(skillCount: number, trackStatus?: LightRagTrackStatus): string {
+  if (!trackStatus) {
+    return `LightRAG accepted ${skillCount} skills and is still indexing in the background.`;
+  }
+
+  const pendingCount =
+    (trackStatus.statusCounts.pending ?? 0) +
+    (trackStatus.statusCounts.processing ?? 0) +
+    (trackStatus.statusCounts.preprocessed ?? 0);
+  const processedCount = trackStatus.statusCounts.processed ?? 0;
+
+  return `LightRAG accepted ${skillCount} skills and is still indexing in the background (${processedCount} processed, ${pendingCount} pending).`;
+}
+
 function getLightRagQueryTimeoutMs(settings: Pick<RefreshSettings, 'timeoutMs'>): number {
   return Math.max(settings.timeoutMs,60_000);
 }
@@ -1601,6 +1713,10 @@ function buildLightRagRecommendationFallbackMessage(error: unknown): string {
   }
 
   return `LightRAG retrieval unavailable, falling back to direct ranking: ${detail}`;
+}
+
+function isLightRagTrackTimeout(error: unknown): boolean {
+  return /indexing did not finish within \d+s/i.test(toErrorMessage(error));
 }
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
