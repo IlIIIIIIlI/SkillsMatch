@@ -253,6 +253,11 @@ export class LightRagClient {
           `LightRAG returned non-JSON from ${targetUrl.toString()}. Check that the base URL points to the API root, not /webui or /docs. Response starts with: ${snippet}`
         );
       }
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new Error(`LightRAG request timed out after ${Math.round(this.config.timeoutMs / 1000)}s.`);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
@@ -305,4 +310,13 @@ function isMoreRecentIsoTimestamp(candidate: string, current?: string): boolean 
   }
 
   return candidateTime > currentTime;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const candidate = error as { name?: string; code?: string };
+  return candidate.name === 'AbortError' || candidate.code === 'ABORT_ERR';
 }

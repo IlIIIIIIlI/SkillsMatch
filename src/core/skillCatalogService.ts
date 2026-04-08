@@ -931,7 +931,7 @@ export class SkillCatalogService {
       const client = new LightRagClient({
         baseUrl: settings.lightRagBaseUrl,
         workspace: this.state.lightRag.workspace,
-        timeoutMs: settings.timeoutMs
+        timeoutMs: getLightRagQueryTimeoutMs(settings)
       });
       const query = await client.query(question);
       retrievalContext = query.response;
@@ -952,7 +952,7 @@ export class SkillCatalogService {
         }
       }
     } catch (error) {
-      statusMessage = `LightRAG retrieval unavailable, falling back to direct ranking: ${toErrorMessage(error)}`;
+      statusMessage = buildLightRagRecommendationFallbackMessage(error);
       source = 'openrouter';
     }
 
@@ -1588,6 +1588,19 @@ function buildRemoteKnowledgeBaseStatusMessage(skillCount: number, remoteInvento
   }
 
   return `LightRAG already has matching ${skillCount} skills. Skipped sync.`;
+}
+
+function getLightRagQueryTimeoutMs(settings: Pick<RefreshSettings, 'timeoutMs'>): number {
+  return Math.max(settings.timeoutMs,60_000);
+}
+
+function buildLightRagRecommendationFallbackMessage(error: unknown): string {
+  const detail = toErrorMessage(error);
+  if (/timed out after \d+s/i.test(detail)) {
+    return `LightRAG retrieval timed out, falling back to direct ranking: ${detail}`;
+  }
+
+  return `LightRAG retrieval unavailable, falling back to direct ranking: ${detail}`;
 }
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
