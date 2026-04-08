@@ -2,7 +2,7 @@
   "name": "skillmatch",
   "displayName": "SkillMatch",
   "description": "Discover, classify, and visualize local, workspace, and online AI skills from one VS Code sidebar.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "chenoilab",
   "private": true,
   "icon": "media/skill-map-icon.png",
