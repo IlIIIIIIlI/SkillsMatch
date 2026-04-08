@@ -116,6 +116,7 @@ export interface ViewState {
 export type WebviewToExtensionMessage =
   | { type: 'ready' }
   | { type: 'refresh' }
+  | { type: 'openSettings' }
   | { type: 'configureOpenRouterKey' }
   | { type: 'openOpenRouterSettings' }
   | { type: 'refreshOpenRouterModels' }
@@ -179,6 +180,9 @@ export interface TagGenerationState {
 export interface LightRagState {
   baseUrl: string;
   workspace: string;
+  effectiveWorkspace?: string;
+  workspaceMode: 'auto' | 'fixed' | 'default';
+  fallbackToDefault?: boolean;
   ready: boolean;
   syncing: boolean;
   syncedAt?: string;

@@ -67,7 +67,6 @@ let focusedNodeId: string | undefined; // 2D/3D: skill id
 let expandedSkillId: string | undefined;
 let skillSearchTimer: number | undefined;
 let graphMode: '2d' | '3d' = '2d';
-let settingsOpen = false;
 let showSelectedOnly = false;
 let searchIsComposing = false;
 let questionIsComposing = false;
@@ -366,17 +365,7 @@ function render(): void {
   <div class="status-dot ${s.busy ? 'busy' : ''}"></div>
   <span class="status-text">${escapeHtml(s.statusMessage ?? 'Ready')}</span>
   <button class="icon-btn" data-action="toggle-top-panels" title="${topPanelsCollapsed ? 'Show setup panels' : 'Hide setup panels'}">${topPanelsCollapsed ? '▾' : '▴'} ${topPanelsToggleLabel}</button>
-  <div class="settings-wrap">
-    <button class="icon-btn" data-action="toggle-settings" title="Settings">⚙</button>
-    <div class="settings-popover ${settingsOpen ? 'open' : ''}">
-      <button class="btn" data-action="refresh">${s.busy ? 'Refreshing…' : 'Refresh'}</button>
-      <button class="btn" data-action="generate-tags" ${tagGeneration.running ? 'disabled' : ''}>${tagGeneration.running ? 'Generating…' : 'Generate AI Tags'}</button>
-      ${tagGeneration.running ? `<button class="btn" data-action="stop-tag-generation">${tagGeneration.stopping ? 'Stopping…' : 'Stop Tag Generation'}</button>` : ''}
-      <button class="btn" data-action="configure-key">${s.snapshot.keyConfigured ? 'Rotate OpenRouter Key' : 'Configure OpenRouter Key'}</button>
-      ${s.snapshot.keyConfigured ? '<button class="btn" data-action="clear-key">Clear Key</button>' : ''}
-      <button class="btn" data-action="clear-filter">Clear All Filters</button>
-    </div>
-  </div>
+  <button class="icon-btn" data-action="open-settings" title="Open SkillMatch Settings">⚙ Settings</button>
 </nav>
 
 <div
@@ -411,7 +400,6 @@ function render(): void {
     </div>
     <div class="setup-actions">
       <button class="btn primary" data-action="configure-key">${s.openRouter.keyConfigured ? 'Rotate Key' : 'Configure Key'}</button>
-      <button class="btn" data-action="open-openrouter-settings">Open Settings</button>
       <button class="btn" data-action="refresh-openrouter-models">${s.openRouter.modelsLoading ? 'Loading Models…' : 'Refresh Models'}</button>
       <button class="btn" data-action="generate-tags" ${tagGeneration.running ? 'disabled' : ''}>${tagGeneration.running ? 'Generating…' : 'Generate Pending Tags'}</button>
       ${tagGeneration.running ? `<button class="btn" data-action="stop-tag-generation">${tagGeneration.stopping ? 'Stopping…' : 'Stop'}</button>` : ''}
@@ -432,10 +420,9 @@ function render(): void {
     <h2>${escapeHtml(truncateMiddle(s.lightRag.baseUrl, 34))}</h2>
     <p>${escapeHtml(s.lightRag.statusMessage ?? 'Build a searchable skills knowledge base for recommendation.')}</p>
     <div class="setup-actions">
-      <button class="btn" data-action="configure-lightrag">Configure URL</button>
       <button class="btn" data-action="sync-kb">${s.lightRag.syncing ? 'Syncing…' : 'Sync KB'}</button>
     </div>
-    <div class="setup-foot">${escapeHtml(s.lightRag.ready ? `Workspace ${s.lightRag.workspace}` : 'Waiting for first successful sync')}</div>
+    <div class="setup-foot">${escapeHtml(formatLightRagWorkspaceFootnote(s.lightRag))}</div>
   </article>
 
   <article class="setup-card">
@@ -443,7 +430,6 @@ function render(): void {
     <h2>${s.onlineSources.githubUrls.length} configured</h2>
     <p>${escapeHtml(s.onlineSources.lastError ?? 'Add repo or folder links to bring external skills into the catalog.')}</p>
     <div class="setup-actions">
-      <button class="btn" data-action="configure-github-sources">Configure Links</button>
       <button class="btn" data-action="refresh">${s.busy ? 'Refreshing…' : 'Refresh'}</button>
     </div>
     <div class="setup-links">${githubUrlsHtml}</div>
@@ -1322,33 +1308,27 @@ function bindDomEvents(): void {
       }
 
       switch (action) {
-        case 'toggle-settings':
-          settingsOpen = !settingsOpen;
-          render();
-          break;
         case 'toggle-top-panels':
           topPanelsCollapsed = !topPanelsCollapsed;
           persistLayoutPrefs();
           render();
           break;
+        case 'open-settings':
+          vscode.postMessage({ type: 'openSettings' });
+          break;
         case 'refresh':
-          settingsOpen = false;
           vscode.postMessage({ type: 'refresh' });
           break;
         case 'configure-key':
-          settingsOpen = false;
           vscode.postMessage({ type: 'configureOpenRouterKey' });
           break;
         case 'open-openrouter-settings':
-          settingsOpen = false;
           vscode.postMessage({ type: 'openOpenRouterSettings' });
           break;
         case 'refresh-openrouter-models':
-          settingsOpen = false;
           vscode.postMessage({ type: 'refreshOpenRouterModels' });
           break;
         case 'save-tag-config':
-          settingsOpen = false;
           vscode.postMessage({
             type: 'updateTagGenerationConfig',
             config: {
@@ -1361,7 +1341,6 @@ function bindDomEvents(): void {
           });
           break;
         case 'stop-tag-generation':
-          settingsOpen = false;
           vscode.postMessage({ type: 'stopTagGeneration' });
           break;
         case 'reset-category-colors':
@@ -1371,27 +1350,21 @@ function bindDomEvents(): void {
           refreshGraphFocusVisibility();
           break;
         case 'configure-lightrag':
-          settingsOpen = false;
           vscode.postMessage({ type: 'configureLightRagBaseUrl' });
           break;
         case 'configure-github-sources':
-          settingsOpen = false;
           vscode.postMessage({ type: 'configureGitHubSources' });
           break;
         case 'clear-key':
-          settingsOpen = false;
           vscode.postMessage({ type: 'clearOpenRouterKey' });
           break;
         case 'generate-tags':
-          settingsOpen = false;
           vscode.postMessage({ type: 'generateTags' });
           break;
         case 'sync-kb':
-          settingsOpen = false;
           vscode.postMessage({ type: 'syncKnowledgeBase' });
           break;
         case 'recommend-skills':
-          settingsOpen = false;
           vscode.postMessage({ type: 'recommendSkills', question: questionDraft });
           break;
         case 'toggle-recommended-skill':
@@ -1400,7 +1373,6 @@ function bindDomEvents(): void {
           }
           break;
         case 'apply-recommended-skills':
-          settingsOpen = false;
           vscode.postMessage({ type: 'applyRecommendedSkills' });
           break;
         case 'toggle-show-selected':
@@ -1409,7 +1381,6 @@ function bindDomEvents(): void {
           render();
           break;
         case 'clear-filter':
-          settingsOpen = false;
           selectedTag = undefined;
           focusedNodeId = undefined;
           searchText = '';
@@ -1464,14 +1435,6 @@ function bindDomEvents(): void {
       }
     });
   });
-
-  // Close settings popover on outside click
-  document.addEventListener('click', (e) => {
-    if (settingsOpen && !(e.target as HTMLElement).closest('.settings-wrap')) {
-      settingsOpen = false;
-      render();
-    }
-  }, { once: true });
 
   const search = document.getElementById('skill-search') as HTMLInputElement | null;
   search?.addEventListener('input', (e) => {
@@ -2350,6 +2313,23 @@ function formatDateTime(value: string): string {
   } catch {
     return value;
   }
+}
+
+function formatLightRagWorkspaceFootnote(lightRag: ViewState['lightRag']): string {
+  if (!lightRag.ready) {
+    return 'Waiting for first successful sync';
+  }
+
+  const effective = lightRag.effectiveWorkspace ?? lightRag.workspace;
+  if (lightRag.fallbackToDefault && lightRag.workspace !== 'default') {
+    return `Workspace ${effective} (fallback from ${lightRag.workspace})`;
+  }
+
+  if (lightRag.workspaceMode === 'default') {
+    return `Workspace ${effective} (server default)`;
+  }
+
+  return `Workspace ${effective}`;
 }
 
 function escapeAttribute(v: string): string {

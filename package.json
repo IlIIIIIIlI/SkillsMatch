@@ -67,6 +67,10 @@
         "title": "SkillMatch: Open OpenRouter Settings"
       },
       {
+        "command": "skillMap.openSettings",
+        "title": "SkillMatch: Open Settings"
+      },
+      {
         "command": "skillMap.configureLightRagBaseUrl",
         "title": "SkillMatch: Configure LightRAG Base URL"
       },
@@ -183,6 +187,26 @@
           "type": "string",
           "default": "http://127.0.0.1:9621",
           "description": "Base URL for the LightRAG API server used to build the skills knowledge base."
+        },
+        "skillMap.lightRag.workspaceMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "fixed",
+            "default"
+          ],
+          "enumDescriptions": [
+            "Derive the LightRAG workspace ID from the current VS Code window.",
+            "Always use the fixed workspace ID below.",
+            "Always use the LightRAG server default workspace."
+          ],
+          "description": "How SkillMatch chooses the LightRAG workspace."
+        },
+        "skillMap.lightRag.fixedWorkspaceId": {
+          "type": "string",
+          "default": "",
+          "description": "Fixed LightRAG workspace ID used when workspace mode is set to 'fixed'."
         },
         "skillMap.lightRag.autoSyncOnRefresh": {
           "type": "boolean",

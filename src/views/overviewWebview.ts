@@ -44,6 +44,9 @@ export class OverviewWebviewSession implements vscode.Disposable {
       case 'refresh':
         await this.service.refresh({ announce: true, reason: 'manual' });
         break;
+      case 'openSettings':
+        await this.service.openSettings();
+        break;
       case 'configureOpenRouterKey':
         await this.service.configureOpenRouterKey();
         break;
@@ -678,16 +681,6 @@ export class OverviewWebviewSession implements vscode.Disposable {
 
       .empty { padding: 24px; text-align: center; opacity: 0.6; font-size: 12px; }
 
-      /* ── Settings popover ── */
-      .settings-wrap { position: relative; }
-      .settings-popover {
-        display: none; position: absolute; right: 0; top: calc(100% + 6px);
-        background: var(--vscode-editor-background); border: 1px solid var(--panel-border);
-        border-radius: 10px; padding: 10px; min-width: 200px; z-index: 100;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.2);
-      }
-      .settings-popover.open { display: grid; gap: 6px; }
-      .settings-popover .btn { width: 100%; text-align: left; border-radius: 6px; }
     </style>
   </head>
   <body>

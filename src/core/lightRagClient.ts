@@ -84,6 +84,14 @@ export class LightRagClient {
     this.workspaceHeaderEnabled = config.workspace.trim().length > 0;
   }
 
+  public getEffectiveWorkspaceId(): string {
+    return this.workspaceHeaderEnabled ? this.config.workspace : 'default';
+  }
+
+  public isUsingDefaultWorkspace(): boolean {
+    return !this.workspaceHeaderEnabled;
+  }
+
   public async getStatus(): Promise<{ status?: string }> {
     return this.requestJson<{ status?: string }>('/health');
   }

@@ -5,6 +5,7 @@ import type { Dirent } from 'node:fs';
 import * as vscode from 'vscode';
 
 import type {
+  LightRagState,
   OpenRouterModelSummary,
   ProjectWorkspaceSummary,
   RecommendedSkill,
@@ -81,6 +82,8 @@ interface RefreshSettings {
   autoGenerateTagsOnRefresh: boolean;
   githubUrls: string[];
   lightRagBaseUrl: string;
+  lightRagWorkspaceMode: LightRagState['workspaceMode'];
+  lightRagFixedWorkspaceId: string;
   lightRagAutoSyncOnRefresh: boolean;
   lightRagSyncTimeoutMs: number;
   projectApplyRelativePath: string;
@@ -147,6 +150,10 @@ export class SkillCatalogService {
 
   public async openOpenRouterSettings(): Promise<void> {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'skillMap.openRouter');
+  }
+
+  public async openSettings(): Promise<void> {
+    await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:chenoilab.skillmatch skillMap');
   }
 
   public async refreshOpenRouterModels(options: { announce: boolean }): Promise<void> {
@@ -802,11 +809,12 @@ export class SkillCatalogService {
     try {
       const client = new LightRagClient({
         baseUrl: settings.lightRagBaseUrl,
-        workspace: this.state.lightRag.workspace,
+        workspace: getLightRagRequestWorkspace(this.state.lightRag),
         timeoutMs: settings.timeoutMs
       });
 
       await client.getStatus();
+      this.syncLightRagWorkspaceStateFromClient(client);
       if (!options.force && cacheEntry?.trackId) {
         const trackStatus = await this.readRemoteTrackStatus(client, cacheEntry.trackId);
         if (trackStatus && trackStatusIndicatesWorkInProgress(trackStatus, expectedSkillCount)) {
@@ -996,6 +1004,24 @@ export class SkillCatalogService {
     }
   }
 
+  private syncLightRagWorkspaceStateFromClient(client: LightRagClient): void {
+    const effectiveWorkspace = client.getEffectiveWorkspaceId();
+    const fallbackToDefault = client.isUsingDefaultWorkspace() && this.state.lightRag.workspace !== 'default';
+    if (
+      this.state.lightRag.effectiveWorkspace === effectiveWorkspace
+      && this.state.lightRag.fallbackToDefault === fallbackToDefault
+    ) {
+      return;
+    }
+
+    this.state.lightRag = {
+      ...this.state.lightRag,
+      effectiveWorkspace,
+      fallbackToDefault
+    };
+    this.emitState();
+  }
+
   private async performRecommendation(question: string): Promise<void> {
     const settings = this.readSettings();
     const apiKey = await this.context.secrets.get(OPENROUTER_SECRET_KEY);
@@ -1019,10 +1045,11 @@ export class SkillCatalogService {
       await this.syncKnowledgeBase({ announce: false });
       const client = new LightRagClient({
         baseUrl: settings.lightRagBaseUrl,
-        workspace: this.state.lightRag.workspace,
+        workspace: getLightRagRequestWorkspace(this.state.lightRag),
         timeoutMs: getLightRagQueryTimeoutMs(settings)
       });
       const query = await client.query(question);
+      this.syncLightRagWorkspaceStateFromClient(client);
       retrievalContext = query.response;
 
       const candidateIds = uniqueStrings(
@@ -1209,6 +1236,15 @@ export class SkillCatalogService {
   private refreshRuntimeState(keyConfigured: boolean): void {
     const settings = this.readSettings();
     const workspaces = this.readWorkspaceFolders();
+    const lightRagWorkspace = resolveLightRagWorkspacePreference(
+      settings.lightRagWorkspaceMode,
+      settings.lightRagFixedWorkspaceId,
+      workspaces.map((workspace) => workspace.id)
+    );
+    const preserveFallback =
+      this.state.lightRag.workspace === lightRagWorkspace.label
+      && this.state.lightRag.workspaceMode === lightRagWorkspace.mode
+      && this.state.lightRag.fallbackToDefault === true;
     const pendingTagCount = countPendingTagGeneration(
       this.state.snapshot.skills,
       this.readAiCache(),
@@ -1252,7 +1288,10 @@ export class SkillCatalogService {
     this.state.lightRag = {
       ...this.state.lightRag,
       baseUrl: settings.lightRagBaseUrl,
-      workspace: buildLightRagWorkspaceId(workspaces.map((workspace) => workspace.id))
+      workspace: lightRagWorkspace.label,
+      effectiveWorkspace: lightRagWorkspace.mode === 'default' || preserveFallback ? 'default' : lightRagWorkspace.label,
+      workspaceMode: lightRagWorkspace.mode,
+      fallbackToDefault: lightRagWorkspace.mode === 'default' ? false : preserveFallback
     };
   }
 
@@ -1271,6 +1310,8 @@ export class SkillCatalogService {
       maxTags: config.get<number>('visualization.maxTags', 36),
       githubUrls: config.get<string[]>('onlineSources.githubUrls', []),
       lightRagBaseUrl: normalizeLightRagBaseUrl(config.get<string>('lightRag.baseUrl', 'http://127.0.0.1:9621')),
+      lightRagWorkspaceMode: config.get<LightRagState['workspaceMode']>('lightRag.workspaceMode', 'auto'),
+      lightRagFixedWorkspaceId: config.get<string>('lightRag.fixedWorkspaceId', config.get<string>('lightRag.workspaceId', '')),
       lightRagAutoSyncOnRefresh: config.get<boolean>('lightRag.autoSyncOnRefresh', true),
       lightRagSyncTimeoutMs: config.get<number>('lightRag.syncTimeoutMs', 120000),
       projectApplyRelativePath: config.get<string>('project.applyRelativePath', '.codex/skills/skillmatch-curated')
@@ -1538,6 +1579,8 @@ function emptyViewState(): ViewState {
     lightRag: {
       baseUrl: 'http://127.0.0.1:9621',
       workspace: buildLightRagWorkspaceId([]),
+      effectiveWorkspace: buildLightRagWorkspaceId([]),
+      workspaceMode: 'auto',
       ready: false,
       syncing: false
     },
@@ -1717,6 +1760,48 @@ function buildLightRagRecommendationFallbackMessage(error: unknown): string {
 
 function isLightRagTrackTimeout(error: unknown): boolean {
   return /indexing did not finish within \d+s/i.test(toErrorMessage(error));
+}
+
+function resolveLightRagWorkspacePreference(
+  workspaceMode: LightRagState['workspaceMode'],
+  fixedWorkspaceId: string,
+  workspaceFolderIds: readonly string[]
+): {
+  label: string;
+  mode: LightRagState['workspaceMode'];
+} {
+  if (workspaceMode === 'default') {
+    return {
+      label: 'default',
+      mode: 'default'
+    };
+  }
+
+  if (workspaceMode === 'fixed') {
+    const trimmed = fixedWorkspaceId.trim();
+    if (trimmed) {
+      return {
+        label: trimmed,
+        mode: 'fixed'
+      };
+    }
+  }
+
+  if (workspaceMode !== 'fixed') {
+    return {
+      label: buildLightRagWorkspaceId(workspaceFolderIds),
+      mode: 'auto'
+    };
+  }
+
+  return {
+    label: buildLightRagWorkspaceId(workspaceFolderIds),
+    mode: 'auto'
+  };
+}
+
+function getLightRagRequestWorkspace(lightRag: LightRagState): string {
+  return lightRag.workspaceMode === 'default' ? '' : lightRag.workspace;
 }
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {

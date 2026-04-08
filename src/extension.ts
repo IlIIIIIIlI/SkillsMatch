@@ -40,6 +40,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('skillMap.openOpenRouterSettings', async () => {
       await service.openOpenRouterSettings();
     }),
+    vscode.commands.registerCommand('skillMap.openSettings', async () => {
+      await service.openSettings();
+    }),
     vscode.commands.registerCommand('skillMap.configureLightRagBaseUrl', async () => {
       await service.configureLightRagBaseUrl();
     }),
