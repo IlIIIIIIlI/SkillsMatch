@@ -71,8 +71,10 @@ let settingsOpen = false;
 let showSelectedOnly = false;
 let searchIsComposing = false;
 let questionIsComposing = false;
-let graphPaneRatio = 0.58;
-let dashboardTopHeightPx: number | undefined;
+let graphPaneRatio = clamp(layoutPrefs.graphPaneRatio ?? 0.58, 0.3, 0.78);
+let dashboardTopHeightPx = typeof layoutPrefs.dashboardTopHeightPx === 'number'
+  ? clamp(layoutPrefs.dashboardTopHeightPx, 220, 900)
+  : undefined;
 let pendingSelectionEchoKey: string | null = null;
 let svgZoomScale = 1;
 let graphMinSharedTags = 1;
@@ -202,6 +204,13 @@ function render(): void {
       return `<option value="${escapeAttribute(model.id)}" ${model.id === s.openRouter.model ? 'selected' : ''}>${escapeHtml(labelParts.join(' · '))}</option>`;
     })
     .join('');
+  const tagConfigSummary = [
+    `batch ${tagBatchSizeValue}`,
+    `run ${tagMaxSkillsValue}`,
+    tagDelayValue > 0 ? `${tagDelayValue}ms delay` : 'no delay',
+    tagAutoValue ? 'auto on refresh' : 'manual only',
+    tagPromptValue.trim() ? 'custom prompt' : 'default prompt'
+  ];
   const selectedSkill =
     visibleSkills.find((sk) => sk.id === s.selectedSkillId) ??
     s.snapshot.skills.find((sk) => sk.id === s.selectedSkillId) ??
@@ -217,8 +226,8 @@ function render(): void {
         .map((skillId) => s.snapshot.skills.find((candidate) => candidate.id === skillId))
         .filter((skill): skill is SkillRecord => Boolean(skill))
         .map((skill) => `
-          <button class="selected-skill-pill" data-action="toggle-skill" data-skill-id="${skill.id}">
-            ${escapeHtml(skill.name)}
+          <button class="selected-skill-pill" data-action="toggle-recommended-skill" data-skill-id="${skill.id}">
+            ${escapeHtml(skill.name)} ×
           </button>
         `)
         .join('');
@@ -374,8 +383,8 @@ function render(): void {
   class="dashboard-layout ${isDashboard ? 'is-dashboard' : ''}"
   style="${isDashboard ? `${dashboardTopHeightPx ? `--dashboard-top-height:${dashboardTopHeightPx}px;` : ''} --graph-pane-width:${(graphPaneRatio * 100).toFixed(1)}%;` : ''}"
 >
-<div class="above-fold" id="above-fold" style="${topPanelsCollapsed ? 'display:none;' : ''}">
-<section class="control-deck">
+<div class="above-fold" id="above-fold">
+<section class="control-deck" style="${topPanelsCollapsed ? 'display:none;' : ''}">
   <article class="setup-card setup-card-emphasis">
     <div class="setup-kicker">OpenRouter</div>
     <h2>${escapeHtml(openRouterModelTitle)}</h2>
@@ -394,41 +403,16 @@ function render(): void {
         ${openRouterModelOptionsHtml}
       </select>
     </label>
-    <div class="tag-config-grid">
-      <label class="setup-field">
-        <span class="setup-field-label">Batch size</span>
-        <input id="tag-batch-size" class="setup-input" type="number" min="1" max="25" value="${tagBatchSizeValue}" />
-      </label>
-      <label class="setup-field">
-        <span class="setup-field-label">Max skills / run</span>
-        <input id="tag-max-skills" class="setup-input" type="number" min="1" max="500" value="${tagMaxSkillsValue}" />
-      </label>
-      <label class="setup-field">
-        <span class="setup-field-label">Delay between batches (ms)</span>
-        <input id="tag-request-delay" class="setup-input" type="number" min="0" max="10000" step="50" value="${tagDelayValue}" />
-      </label>
-      <label class="setup-field setup-field-checkbox">
-        <span class="setup-field-label">Auto generate on refresh</span>
-        <input id="tag-auto-generate" type="checkbox" ${tagAutoValue ? 'checked' : ''} />
-      </label>
-    </div>
-    <label class="setup-field">
-      <span class="setup-field-label">Tag generation prompt additions</span>
-      <textarea
-        id="tag-prompt"
-        class="setup-textarea"
-        placeholder="Example: Prioritize implementation details, tool names, frameworks, and avoid generic tags."
-      >${escapeHtml(tagPromptValue)}</textarea>
-    </label>
     <div class="setup-meta-row">
       <span class="pill">${escapeHtml(tagGenerationStatus)}</span>
       ${tagGeneration.lastCompletedAt ? `<span class="pill">Last run ${escapeHtml(formatDateTime(tagGeneration.lastCompletedAt))}</span>` : ''}
       <span class="pill">${s.openRouter.pendingTagCount} pending</span>
+      ${tagConfigSummary.map((entry) => `<span class="pill">${escapeHtml(entry)}</span>`).join('')}
     </div>
     <div class="setup-actions">
       <button class="btn primary" data-action="configure-key">${s.openRouter.keyConfigured ? 'Rotate Key' : 'Configure Key'}</button>
+      <button class="btn" data-action="open-openrouter-settings">Open Settings</button>
       <button class="btn" data-action="refresh-openrouter-models">${s.openRouter.modelsLoading ? 'Loading Models…' : 'Refresh Models'}</button>
-      <button class="btn" data-action="save-tag-config">Save Tag Settings</button>
       <button class="btn" data-action="generate-tags" ${tagGeneration.running ? 'disabled' : ''}>${tagGeneration.running ? 'Generating…' : 'Generate Pending Tags'}</button>
       ${tagGeneration.running ? `<button class="btn" data-action="stop-tag-generation">${tagGeneration.stopping ? 'Stopping…' : 'Stop'}</button>` : ''}
     </div>
@@ -516,7 +500,7 @@ function render(): void {
   </div>
 </div>
 </div>
-${isDashboard && !topPanelsCollapsed ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize top panels"></div>' : ''}
+${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertical" title="Drag to resize upper section"></div>' : ''}
 
 <div class="main ${isDashboard ? 'is-dashboard' : ''}" id="main-layout">
   <div class="graph-pane">
@@ -1714,6 +1698,7 @@ function beginSplitterDrag(
     document.body.classList.remove('is-resizing', 'horizontal-resize', 'vertical-resize');
     input.element.classList.remove('active');
     document.removeEventListener('pointermove', onMove);
+    persistLayoutPrefs();
   };
 
   document.addEventListener('pointermove', onMove);
@@ -1811,9 +1796,17 @@ function applySelectionListTransform(
   selectedSkillIds: ReadonlySet<string>,
   onlySelected: boolean
 ): SkillRecord[] {
+  if (onlySelected && selectedSkillIds.size === 0) {
+    return [...skills].sort((left, right) => left.name.localeCompare(right.name));
+  }
+
   const filtered = onlySelected
     ? skills.filter((skill) => selectedSkillIds.has(skill.id))
     : skills;
+
+  if (onlySelected && filtered.length === 0) {
+    return [...skills].sort((left, right) => left.name.localeCompare(right.name));
+  }
 
   return [...filtered].sort((left, right) => {
     const leftSelected = selectedSkillIds.has(left.id) ? 1 : 0;
@@ -2273,13 +2266,21 @@ function readGraphPrefs(): {
 
 function readLayoutPrefs(): {
   topPanelsCollapsed?: boolean;
+  graphPaneRatio?: number;
+  dashboardTopHeightPx?: number;
 } {
   try {
     const raw = window.localStorage.getItem('skillmatch.layout-prefs.v1');
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as { topPanelsCollapsed?: boolean };
+    const parsed = JSON.parse(raw) as {
+      topPanelsCollapsed?: boolean;
+      graphPaneRatio?: number;
+      dashboardTopHeightPx?: number;
+    };
     return {
-      topPanelsCollapsed: typeof parsed.topPanelsCollapsed === 'boolean' ? parsed.topPanelsCollapsed : undefined
+      topPanelsCollapsed: typeof parsed.topPanelsCollapsed === 'boolean' ? parsed.topPanelsCollapsed : undefined,
+      graphPaneRatio: typeof parsed.graphPaneRatio === 'number' ? parsed.graphPaneRatio : undefined,
+      dashboardTopHeightPx: typeof parsed.dashboardTopHeightPx === 'number' ? parsed.dashboardTopHeightPx : undefined
     };
   } catch {
     return {};
@@ -2300,7 +2301,9 @@ function persistGraphPrefs(): void {
 function persistLayoutPrefs(): void {
   try {
     window.localStorage.setItem('skillmatch.layout-prefs.v1', JSON.stringify({
-      topPanelsCollapsed
+      topPanelsCollapsed,
+      graphPaneRatio,
+      dashboardTopHeightPx
     }));
   } catch {
     // Ignore persistence failures inside the webview.

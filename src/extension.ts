@@ -53,15 +53,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await service.generateTags({ announce: true });
     }),
     vscode.commands.registerCommand('skillMap.syncKnowledgeBase', async () => {
-      await service.syncKnowledgeBase({ announce: true, force: true });
+      await service.syncKnowledgeBase({ announce: true });
     }),
     vscode.commands.registerCommand('skillMap.applyRecommendedSkills', async () => {
       await service.applyRecommendedSkills();
     }),
-    vscode.commands.registerCommand('skillMap.openSkill', async (skillId: string) => {
+    vscode.commands.registerCommand('skillMap.openSkill', async (input: unknown) => {
+      const skillId = resolveSkillIdFromCommandInput(input);
+      if (!skillId) {
+        return;
+      }
       await service.openSkill(skillId);
     }),
-    vscode.commands.registerCommand('skillMap.deleteSkill', async (skillId: string) => {
+    vscode.commands.registerCommand('skillMap.deleteSkill', async (input: unknown) => {
+      const skillId = resolveSkillIdFromCommandInput(input);
+      if (!skillId) {
+        return;
+      }
       await service.deleteSkill(skillId);
     }),
     vscode.commands.registerCommand('skillMap.setFilter', (filter: SkillFilter) => {
@@ -103,3 +111,31 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {}
+
+function resolveSkillIdFromCommandInput(input: unknown): string | undefined {
+  if (typeof input === 'string') {
+    return input;
+  }
+
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+
+  const candidate = input as {
+    kind?: string;
+    skillId?: string;
+    skill?: {
+      id?: string;
+    };
+  };
+
+  if (typeof candidate.skillId === 'string') {
+    return candidate.skillId;
+  }
+
+  if (candidate.kind === 'skill' && typeof candidate.skill?.id === 'string') {
+    return candidate.skill.id;
+  }
+
+  return undefined;
+}

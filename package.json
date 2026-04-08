@@ -271,7 +271,7 @@
         {
           "command": "skillMap.deleteSkill",
           "when": "viewItem == workspaceSkillDeletable",
-          "group": "inline@1"
+          "group": "navigation@3"
         }
       ]
     }

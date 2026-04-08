@@ -1,5 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import type { Dirent } from 'node:fs';
 
 import * as vscode from 'vscode';
 
@@ -22,7 +23,7 @@ import {
   OPENROUTER_SECRET_KEY
 } from './constants';
 import { parseConfiguredGitHubSourceUrls, splitGitHubSourceInput } from './githubSourceConfig';
-import { LightRagClient } from './lightRagClient';
+import { type LightRagDocumentInventory, LightRagClient, normalizeLightRagBaseUrl } from './lightRagClient';
 import { discoverLocalSkills } from './localSkillDiscovery';
 import { OpenRouterClient } from './openRouterClient';
 import { discoverOnlineSkills } from './onlineSkillDiscovery';
@@ -58,6 +59,8 @@ interface LightRagSyncCacheEntry {
   syncedAt: string;
   skillCount: number;
 }
+
+const APPLIED_SKILL_METADATA_FILE = '.skillmatch-source.json';
 
 interface RefreshSettings {
   baseUrl: string;
@@ -267,7 +270,7 @@ export class SkillCatalogService {
       return;
     }
 
-    const nextValue = value.trim() || 'http://127.0.0.1:9621';
+    const nextValue = normalizeLightRagBaseUrl(value);
     await vscode.workspace.getConfiguration('skillMap').update('lightRag.baseUrl', nextValue, vscode.ConfigurationTarget.Global);
     this.refreshRuntimeState(this.state.openRouter.keyConfigured);
     this.recomputeDerivedState({ statusMessage: `LightRAG base URL set to ${nextValue}.` });
@@ -565,21 +568,7 @@ export class SkillCatalogService {
 
     await mapLimit(selectedSkills, 3, async (skill) => {
       const skillDir = path.join(targetRoot, buildAppliedSkillDirectoryName(skill));
-      try {
-        await materializeSkill(skill, skillDir, settings.timeoutMs);
-        return;
-      } catch {
-        // Fall back to manifest-only materialization when the full skill payload cannot be resolved.
-      }
-
-      try {
-        const content = await loadSkillManifestContent(skill, settings.timeoutMs);
-        await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf8');
-      } catch {
-        await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), synthesizeSkillManifest(skill), 'utf8');
-      }
+      await this.materializeSkillIntoDirectory(skill, skillDir, settings.timeoutMs);
     });
 
     await fs.writeFile(
@@ -787,6 +776,9 @@ export class SkillCatalogService {
     const snapshotHash = createSnapshotHash(this.state.snapshot.skills);
     const syncCache = this.readLightRagSyncCache();
     const cacheEntry = syncCache[this.state.lightRag.workspace];
+    const expectedFileSources = this.state.snapshot.skills
+      .map((skill) => buildKnowledgeBaseFileSource(skill))
+      .sort((left, right) => left.localeCompare(right));
 
     if (!options.force && cacheEntry?.snapshotHash === snapshotHash && this.state.lightRag.ready) {
       return;
@@ -807,6 +799,38 @@ export class SkillCatalogService {
       });
 
       await client.getStatus();
+      if (!options.force) {
+        const remoteInventory = await this.readRemoteKnowledgeBaseInventory(client);
+        if (remoteInventory && remoteKnowledgeBaseMatchesExpected(expectedFileSources, remoteInventory)) {
+          const syncedAt = remoteInventory.latestUpdatedAt ?? new Date().toISOString();
+          const nextCache = {
+            ...syncCache,
+            [this.state.lightRag.workspace]: {
+              snapshotHash,
+              syncedAt,
+              skillCount: this.state.snapshot.skills.length
+            }
+          };
+          await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
+
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            ready: true,
+            syncing: false,
+            syncedAt,
+            statusMessage: buildRemoteKnowledgeBaseStatusMessage(this.state.snapshot.skills.length, remoteInventory)
+          };
+          this.emitState();
+
+          if (options.announce) {
+            vscode.window.showInformationMessage(
+              `LightRAG already has matching ${this.state.snapshot.skills.length} skills. Skipped sync.`
+            );
+          }
+          return;
+        }
+      }
+
       await client.clearDocuments();
 
       const documents = await mapLimit(this.state.snapshot.skills, 4, async (skill) => {
@@ -872,6 +896,14 @@ export class SkillCatalogService {
           await this.configureLightRagBaseUrl();
         }
       }
+    }
+  }
+
+  private async readRemoteKnowledgeBaseInventory(client: LightRagClient): Promise<LightRagDocumentInventory | undefined> {
+    try {
+      return await client.getDocumentInventory();
+    } catch {
+      return undefined;
     }
   }
 
@@ -1149,7 +1181,7 @@ export class SkillCatalogService {
       timeoutMs: config.get<number>('onlineSources.timeoutMs', 12000),
       maxTags: config.get<number>('visualization.maxTags', 36),
       githubUrls: config.get<string[]>('onlineSources.githubUrls', []),
-      lightRagBaseUrl: config.get<string>('lightRag.baseUrl', 'http://127.0.0.1:9621'),
+      lightRagBaseUrl: normalizeLightRagBaseUrl(config.get<string>('lightRag.baseUrl', 'http://127.0.0.1:9621')),
       lightRagAutoSyncOnRefresh: config.get<boolean>('lightRag.autoSyncOnRefresh', true),
       lightRagSyncTimeoutMs: config.get<number>('lightRag.syncTimeoutMs', 120000),
       projectApplyRelativePath: config.get<string>('project.applyRelativePath', '.codex/skills/skillmatch-curated')
@@ -1186,13 +1218,127 @@ export class SkillCatalogService {
 
     for (const workspace of workspaceCandidates) {
       const targetRoot = resolveProjectApplyPath(workspace.fsPath, settings.projectApplyRelativePath);
-      const manifestPath = path.join(targetRoot, buildAppliedSkillDirectoryName(skill), 'SKILL.md');
-      if (await pathExists(manifestPath)) {
-        return manifestPath;
+      const existingManifest = await this.findMaterializedSkillManifestInRoot(skill, targetRoot);
+      if (existingManifest) {
+        return existingManifest;
+      }
+
+      if (await this.wasSkillPreviouslyAppliedToRoot(skill, targetRoot)) {
+        const skillDir = path.join(targetRoot, buildAppliedSkillDirectoryName(skill));
+        const repairedManifest = await this.materializeSkillIntoDirectory(skill, skillDir, settings.timeoutMs);
+        if (await pathExists(repairedManifest)) {
+          return repairedManifest;
+        }
       }
     }
 
     return undefined;
+  }
+
+  private async materializeSkillIntoDirectory(skill: SkillRecord, skillDir: string, timeoutMs: number): Promise<string> {
+    const manifestPath = path.join(skillDir, 'SKILL.md');
+
+    try {
+      await materializeSkill(skill, skillDir, timeoutMs);
+    } catch {
+      // Fall back to manifest-only materialization when the full skill payload cannot be resolved.
+      try {
+        const content = await loadSkillManifestContent(skill, timeoutMs);
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(manifestPath, content, 'utf8');
+      } catch {
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(manifestPath, synthesizeSkillManifest(skill), 'utf8');
+      }
+    }
+
+    if (!(await pathExists(manifestPath))) {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(manifestPath, synthesizeSkillManifest(skill), 'utf8');
+    }
+
+    await this.writeAppliedSkillMetadata(skill, skillDir);
+    return manifestPath;
+  }
+
+  private async writeAppliedSkillMetadata(skill: SkillRecord, skillDir: string): Promise<void> {
+    try {
+      await fs.writeFile(
+        path.join(skillDir, APPLIED_SKILL_METADATA_FILE),
+        JSON.stringify({
+          skillId: skill.id,
+          name: skill.name,
+          slug: skill.slug,
+          location: skill.location,
+          manifestPath: skill.manifestPath,
+          writtenAt: new Date().toISOString()
+        }, null, 2),
+        'utf8'
+      );
+    } catch {
+      // Metadata improves reopening applied skills, but should not block apply/open.
+    }
+  }
+
+  private async findMaterializedSkillManifestInRoot(skill: SkillRecord, targetRoot: string): Promise<string | undefined> {
+    const expectedManifestPath = path.join(targetRoot, buildAppliedSkillDirectoryName(skill), 'SKILL.md');
+    if (await pathExists(expectedManifestPath)) {
+      return expectedManifestPath;
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(targetRoot, { withFileTypes: true });
+    } catch {
+      return undefined;
+    }
+
+    const slugPrefix = `${skill.slug || 'skill'}-`;
+    let slugMatchManifest: string | undefined;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const skillDir = path.join(targetRoot, entry.name);
+      const manifestPath = path.join(skillDir, 'SKILL.md');
+      if (!(await pathExists(manifestPath))) {
+        continue;
+      }
+
+      const metadataPath = path.join(skillDir, APPLIED_SKILL_METADATA_FILE);
+      if (await this.matchesAppliedSkillMetadata(metadataPath, skill.id)) {
+        return manifestPath;
+      }
+
+      if (!slugMatchManifest && entry.name.startsWith(slugPrefix)) {
+        slugMatchManifest = manifestPath;
+      }
+    }
+
+    return slugMatchManifest;
+  }
+
+  private async matchesAppliedSkillMetadata(metadataPath: string, skillId: string): Promise<boolean> {
+    try {
+      const payload = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as { skillId?: string };
+      return payload.skillId === skillId;
+    } catch {
+      return false;
+    }
+  }
+
+  private async wasSkillPreviouslyAppliedToRoot(skill: SkillRecord, targetRoot: string): Promise<boolean> {
+    try {
+      const selectionPath = path.join(targetRoot, 'selection.json');
+      const payload = JSON.parse(await fs.readFile(selectionPath, 'utf8')) as {
+        skills?: Array<{ id?: string }>;
+      };
+      return Array.isArray(payload.skills) && payload.skills.some((entry) => entry.id === skill.id);
+    } catch {
+      return false;
+    }
   }
 
   private async offerGitHubRecoveryOptions(message: string): Promise<void> {
@@ -1408,6 +1554,40 @@ function createSnapshotHash(skills: SkillRecord[]): string {
     location: skill.location,
     lastSyncedAt: skill.lastSyncedAt
   }))));
+}
+
+function remoteKnowledgeBaseMatchesExpected(
+  expectedFileSources: readonly string[],
+  remoteInventory: LightRagDocumentInventory
+): boolean {
+  if ((remoteInventory.statusCounts.failed ?? 0) > 0) {
+    return false;
+  }
+
+  if (remoteInventory.totalCount !== expectedFileSources.length) {
+    return false;
+  }
+
+  if (remoteInventory.filePaths.length !== expectedFileSources.length) {
+    return false;
+  }
+
+  const normalizedRemote = [...remoteInventory.filePaths].sort((left, right) => left.localeCompare(right));
+  return expectedFileSources.every((fileSource, index) => fileSource === normalizedRemote[index]);
+}
+
+function buildRemoteKnowledgeBaseStatusMessage(skillCount: number, remoteInventory: LightRagDocumentInventory): string {
+  const pendingCount =
+    (remoteInventory.statusCounts.pending ?? 0) +
+    (remoteInventory.statusCounts.processing ?? 0) +
+    (remoteInventory.statusCounts.preprocessed ?? 0);
+  const processedCount = remoteInventory.statusCounts.processed ?? 0;
+
+  if (pendingCount > 0) {
+    return `LightRAG already has matching ${skillCount} skills. Reusing remote inventory (${processedCount} processed, ${pendingCount} indexing).`;
+  }
+
+  return `LightRAG already has matching ${skillCount} skills. Skipped sync.`;
 }
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {

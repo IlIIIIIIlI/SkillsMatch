@@ -75,7 +75,7 @@ export class OverviewWebviewSession implements vscode.Disposable {
         await this.service.generateTags({ announce: true });
         break;
       case 'syncKnowledgeBase':
-        await this.service.syncKnowledgeBase({ announce: true, force: true });
+        await this.service.syncKnowledgeBase({ announce: true });
         break;
       case 'recommendSkills':
         await this.service.recommendSkills(message.question);
