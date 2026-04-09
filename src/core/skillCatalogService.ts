@@ -1063,7 +1063,14 @@ export class SkillCatalogService {
           .map((skillId) => this.state.snapshot.skills.find((skill) => skill.id === skillId))
           .filter((skill): skill is SkillRecord => Boolean(skill));
         if (matched.length > 0) {
-          candidates = matched;
+          // Merge LightRAG matches with top lexical candidates so strong keyword
+          // matches (e.g. "java-pro" for a Java query) aren't lost when LightRAG's
+          // knowledge graph returns only thematically adjacent skills.
+          const matchedIds = new Set(matched.map((skill) => skill.id));
+          const lexicalTop = rankSkillsLexically(question, this.state.snapshot.skills)
+            .slice(0, 6)
+            .filter((skill) => !matchedIds.has(skill.id));
+          candidates = [...matched, ...lexicalTop];
           source = 'lightrag+openrouter';
         }
       }

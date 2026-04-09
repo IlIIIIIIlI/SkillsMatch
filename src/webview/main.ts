@@ -147,6 +147,10 @@ window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessag
       focusedNodeId = undefined;
     }
     state = message.state;
+    // Auto-disable "Only Selected" when no skills are selected
+    if (showSelectedOnly && message.state.recommendation.selectedSkillIds.length === 0) {
+      showSelectedOnly = false;
+    }
     syncTagGenerationDraftsFromState(message.state);
     vscode.setState(state);
     if (isSelectionEchoState(previousState, message.state)) {
@@ -178,6 +182,7 @@ function render(): void {
   }
 
   const focusedInput = captureFocusedInput();
+  const aboveFoldScrollTop = (document.getElementById('above-fold') as HTMLElement | null)?.scrollTop ?? 0;
   const selectedSkillIds = new Set(s.recommendation.selectedSkillIds);
   const visibleSkills = getDisplaySkills(s);
   const graphStats = buildSkillOverlapGraph(getBaseVisibleSkills(s));
@@ -553,6 +558,10 @@ ${isDashboard ? '<div id="dashboard-top-splitter" class="layout-splitter vertica
   bindDomEvents();
   bindResizableLayout();
   restoreFocusedInput(focusedInput);
+  if (aboveFoldScrollTop > 0) {
+    const aboveFold = document.getElementById('above-fold') as HTMLElement | null;
+    if (aboveFold) aboveFold.scrollTop = aboveFoldScrollTop;
+  }
 
   if (graphMode === '2d') {
     attachSvgToSimulation();
@@ -1369,7 +1378,12 @@ function bindDomEvents(): void {
           break;
         case 'toggle-recommended-skill':
           if (el.dataset.skillId) {
-            vscode.postMessage({ type: 'toggleRecommendedSkill', skillId: el.dataset.skillId });
+            const skillId = el.dataset.skillId;
+            const isCurrentlySelected = state?.recommendation.selectedSkillIds.includes(skillId) ?? false;
+            if (!isCurrentlySelected) {
+              showSelectedOnly = true;
+            }
+            vscode.postMessage({ type: 'toggleRecommendedSkill', skillId });
           }
           break;
         case 'apply-recommended-skills':
@@ -1695,7 +1709,7 @@ interface FocusedInputState {
 let lastFocusedInput: FocusedInputState | undefined;
 
 function restoreFocusedInput(focusedInput?: FocusedInputState): void {
-  const target = focusedInput ?? lastFocusedInput;
+  const target = focusedInput;
   if (!target) return;
   const el = document.getElementById(target.id) as HTMLInputElement | null;
   if (!el) return;
@@ -1731,7 +1745,7 @@ function queueSearchRender(): void {
 
 function captureFocusedInput(): FocusedInputState | undefined {
   if (!(document.activeElement instanceof HTMLInputElement)) {
-    return lastFocusedInput;
+    return undefined;
   }
 
   return captureElementSelection(document.activeElement);
@@ -1799,9 +1813,19 @@ function isSelectionEchoState(previousState: ViewState | undefined, nextState: V
 }
 
 function getBaseVisibleSkills(s: ViewState): SkillRecord[] {
+  const selectedIds = new Set(s.recommendation.selectedSkillIds);
+  const filtered = applyLocalFilters(s.visibleSkills, searchText, selectedTag);
+
+  // Ensure selected recommended skills always appear, even if filtered out
+  const filteredIds = new Set(filtered.map((sk) => sk.id));
+  const missingSelected = s.recommendation.selectedSkillIds
+    .filter((id) => !filteredIds.has(id))
+    .map((id) => s.snapshot.skills.find((sk) => sk.id === id))
+    .filter((sk): sk is SkillRecord => Boolean(sk));
+
   return applySelectionListTransform(
-    applyLocalFilters(s.visibleSkills, searchText, selectedTag),
-    new Set(s.recommendation.selectedSkillIds),
+    [...filtered, ...missingSelected],
+    selectedIds,
     showSelectedOnly
   );
 }
@@ -2094,7 +2118,12 @@ function updateSkillListOnly(): void {
         } else if (action === 'open-skill' && el.dataset.skillId) {
           vscode.postMessage({ type: 'openSkill', skillId: el.dataset.skillId });
         } else if (action === 'toggle-recommended-skill' && el.dataset.skillId) {
-          vscode.postMessage({ type: 'toggleRecommendedSkill', skillId: el.dataset.skillId });
+          const skillId = el.dataset.skillId;
+          const isCurrentlySelected = state?.recommendation.selectedSkillIds.includes(skillId) ?? false;
+          if (!isCurrentlySelected) {
+            showSelectedOnly = true;
+          }
+          vscode.postMessage({ type: 'toggleRecommendedSkill', skillId });
         } else if (action === 'select-tag' && el.dataset.tag) {
           selectedTag = el.dataset.tag;
           focusedNodeId = undefined;

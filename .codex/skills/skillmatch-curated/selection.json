@@ -1,19 +1,31 @@
 {
-  "generatedAt": "2026-04-07T11:48:33.722Z",
+  "generatedAt": "2026-04-09T02:39:27.733Z",
   "source": "SkillMatch",
-  "question": "",
+  "question": "Analyse Java and React project, Output project info, Markdown output, Website output",
   "skills": [
     {
-      "id": "e2213257cfc2e7817f425efd46df2b83c0aa3a5d",
-      "name": "Android Native Dev",
-      "sourceLabel": "GitHub · MiniMax-AI/skills:skills",
-      "location": "https://github.com/MiniMax-AI/skills/blob/main/skills/android-native-dev/SKILL.md"
+      "id": "944e33e9c9e41f8b402329462bdc791cff6d7605",
+      "name": "React/Next.js Development Workflow",
+      "sourceLabel": "Claude Global (/Users/andyyang/.claude/skills)",
+      "location": "/Users/andyyang/.claude/skills/react-nextjs-development"
     },
     {
-      "id": "5ea9bf80a9f2a94736a8837d8a0fb6403546b463",
-      "name": "Build an MCP App (Interactive UI Widgets)",
-      "sourceLabel": "Claude Plugins Marketplace (/Users/andyyang/.claude/plugins/marketplaces/claude-plugins-official/plugins/mcp-server-dev/skills)",
-      "location": "/Users/andyyang/.claude/plugins/marketplaces/claude-plugins-official/plugins/mcp-server-dev/skills/build-mcp-app"
+      "id": "1b6d21c327ec5ba91534d9e7f1ce63811e6421f9",
+      "name": "Favicon",
+      "sourceLabel": "Claude Global (/Users/andyyang/.claude/skills)",
+      "location": "/Users/andyyang/.claude/skills/favicon"
+    },
+    {
+      "id": "05eaac057835f5d33586be563fdd2ae387472915",
+      "name": "React/React Native Component Scaffolding",
+      "sourceLabel": "Claude Global (/Users/andyyang/.claude/skills)",
+      "location": "/Users/andyyang/.claude/skills/frontend-mobile-development-component-scaffold"
+    },
+    {
+      "id": "73af7f96412d9bbc22f2e4cbd4c89c770ddcc871",
+      "name": "Project Guidelines Skill (Example)",
+      "sourceLabel": "Claude Global (/Users/andyyang/.claude/skills)",
+      "location": "/Users/andyyang/.claude/skills/cc-skill-project-guidelines-example"
     }
   ]
 }
