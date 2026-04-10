@@ -426,6 +426,7 @@ function render(): void {
     <p>${escapeHtml(s.lightRag.statusMessage ?? 'Build a searchable skills knowledge base for recommendation.')}</p>
     <div class="setup-actions">
       <button class="btn" data-action="sync-kb">${s.lightRag.syncing ? 'Syncing…' : 'Sync KB'}</button>
+      <button class="btn subtle" data-action="force-rebuild-kb" ${s.lightRag.syncing ? 'disabled' : ''}>Force Rebuild</button>
     </div>
     <div class="setup-foot">${escapeHtml(formatLightRagWorkspaceFootnote(s.lightRag))}</div>
   </article>
@@ -1372,6 +1373,9 @@ function bindDomEvents(): void {
           break;
         case 'sync-kb':
           vscode.postMessage({ type: 'syncKnowledgeBase' });
+          break;
+        case 'force-rebuild-kb':
+          vscode.postMessage({ type: 'forceRebuildKnowledgeBase' });
           break;
         case 'recommend-skills':
           vscode.postMessage({ type: 'recommendSkills', question: questionDraft });

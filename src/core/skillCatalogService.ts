@@ -807,6 +807,23 @@ export class SkillCatalogService {
     this.emitState();
 
     try {
+      if (options.force && options.announce) {
+        const choice = await vscode.window.showWarningMessage(
+          'Force Rebuild will delete the current LightRAG documents and rebuild the KB from scratch. Continue?',
+          { modal: true },
+          'Force Rebuild'
+        );
+        if (choice !== 'Force Rebuild') {
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            syncing: false,
+            statusMessage: 'Force rebuild cancelled.'
+          };
+          this.emitState();
+          return;
+        }
+      }
+
       const client = new LightRagClient({
         baseUrl: settings.lightRagBaseUrl,
         workspace: getLightRagRequestWorkspace(this.state.lightRag),
@@ -858,9 +875,11 @@ export class SkillCatalogService {
         }
       }
 
+      let remoteInventory: LightRagDocumentInventory | undefined;
       if (!options.force) {
-        const remoteInventory = await this.readRemoteKnowledgeBaseInventory(client);
-        if (remoteInventory && remoteKnowledgeBaseMatchesExpected(expectedFileSources, remoteInventory)) {
+        const remoteInventoryResult = await this.readRemoteKnowledgeBaseInventory(client);
+        if (remoteInventoryResult.inventory && remoteKnowledgeBaseMatchesExpected(expectedFileSources, remoteInventoryResult.inventory)) {
+          remoteInventory = remoteInventoryResult.inventory;
           const syncedAt = remoteInventory.latestUpdatedAt ?? new Date().toISOString();
           const nextCache = {
             ...syncCache,
@@ -889,9 +908,44 @@ export class SkillCatalogService {
           }
           return;
         }
+
+        remoteInventory = remoteInventoryResult.inventory;
+        if (remoteInventoryResult.error) {
+          const message = buildLightRagInventoryUnavailableMessage(remoteInventoryResult.error);
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            ready: false,
+            syncing: false,
+            statusMessage: message
+          };
+          this.emitState();
+
+          if (options.announce) {
+            vscode.window.showWarningMessage(message);
+          }
+          return;
+        }
+
+        if (remoteInventory && remoteInventory.totalCount > 0) {
+          const message = buildLightRagDestructiveSyncBlockedMessage(expectedSkillCount, remoteInventory);
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            ready: false,
+            syncing: false,
+            statusMessage: message
+          };
+          this.emitState();
+
+          if (options.announce) {
+            vscode.window.showWarningMessage(message);
+          }
+          return;
+        }
       }
 
-      await client.clearDocuments();
+      if (options.force) {
+        await client.clearDocuments();
+      }
 
       const documents = await mapLimit(this.state.snapshot.skills, 4, async (skill) => {
         let manifestContent: string | undefined;
@@ -988,11 +1042,18 @@ export class SkillCatalogService {
     }
   }
 
-  private async readRemoteKnowledgeBaseInventory(client: LightRagClient): Promise<LightRagDocumentInventory | undefined> {
+  private async readRemoteKnowledgeBaseInventory(client: LightRagClient): Promise<{
+    inventory?: LightRagDocumentInventory;
+    error?: Error;
+  }> {
     try {
-      return await client.getDocumentInventory();
-    } catch {
-      return undefined;
+      return {
+        inventory: await client.getDocumentInventory()
+      };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error : new Error('Unable to read LightRAG document inventory.')
+      };
     }
   }
 
@@ -1317,7 +1378,7 @@ export class SkillCatalogService {
       maxTags: config.get<number>('visualization.maxTags', 36),
       githubUrls: config.get<string[]>('onlineSources.githubUrls', []),
       lightRagBaseUrl: normalizeLightRagBaseUrl(config.get<string>('lightRag.baseUrl', 'http://127.0.0.1:9621')),
-      lightRagWorkspaceMode: config.get<LightRagState['workspaceMode']>('lightRag.workspaceMode', 'auto'),
+      lightRagWorkspaceMode: config.get<LightRagState['workspaceMode']>('lightRag.workspaceMode', 'default'),
       lightRagFixedWorkspaceId: config.get<string>('lightRag.fixedWorkspaceId', config.get<string>('lightRag.workspaceId', '')),
       lightRagAutoSyncOnRefresh: config.get<boolean>('lightRag.autoSyncOnRefresh', true),
       lightRagSyncTimeoutMs: config.get<number>('lightRag.syncTimeoutMs', 120000),
@@ -1585,9 +1646,9 @@ function emptyViewState(): ViewState {
     },
     lightRag: {
       baseUrl: 'http://127.0.0.1:9621',
-      workspace: buildLightRagWorkspaceId([]),
-      effectiveWorkspace: buildLightRagWorkspaceId([]),
-      workspaceMode: 'auto',
+      workspace: 'default',
+      effectiveWorkspace: 'default',
+      workspaceMode: 'default',
       ready: false,
       syncing: false
     },
@@ -1750,6 +1811,29 @@ function buildLightRagBackgroundIndexingMessage(skillCount: number, trackStatus?
   const processedCount = trackStatus.statusCounts.processed ?? 0;
 
   return `LightRAG accepted ${skillCount} skills and is still indexing in the background (${processedCount} processed, ${pendingCount} pending).`;
+}
+
+function buildLightRagInventoryUnavailableMessage(error: Error): string {
+  const detail = toErrorMessage(error).replace(/\s+/g, ' ').trim();
+  const compactDetail = detail.length > 160 ? `${detail.slice(0, 157)}...` : detail;
+  return `LightRAG inventory check failed, so SkillMatch skipped destructive resync to protect the existing KB. ${compactDetail}`;
+}
+
+function buildLightRagDestructiveSyncBlockedMessage(
+  expectedSkillCount: number,
+  remoteInventory: LightRagDocumentInventory
+): string {
+  const pendingCount =
+    (remoteInventory.statusCounts.pending ?? 0) +
+    (remoteInventory.statusCounts.processing ?? 0) +
+    (remoteInventory.statusCounts.preprocessed ?? 0);
+  const processedCount = remoteInventory.statusCounts.processed ?? 0;
+
+  if (pendingCount > 0) {
+    return `LightRAG already contains ${remoteInventory.totalCount} skills (${processedCount} processed, ${pendingCount} indexing). Default Sync KB will not delete it. Use Force Rebuild only if you really want to replace the current KB with ${expectedSkillCount} local skills.`;
+  }
+
+  return `LightRAG already contains ${remoteInventory.totalCount} skills. Default Sync KB will not delete it. Use Force Rebuild only if you really want to replace the current KB with ${expectedSkillCount} local skills.`;
 }
 
 function getLightRagQueryTimeoutMs(settings: Pick<RefreshSettings, 'timeoutMs'>): number {

@@ -137,6 +137,7 @@ export type WebviewToExtensionMessage =
   | { type: 'clearOpenRouterKey' }
   | { type: 'generateTags' }
   | { type: 'syncKnowledgeBase' }
+  | { type: 'forceRebuildKnowledgeBase' }
   | { type: 'recommendSkills'; question: string }
   | { type: 'toggleRecommendedSkill'; skillId: string }
   | { type: 'applyRecommendedSkills' }

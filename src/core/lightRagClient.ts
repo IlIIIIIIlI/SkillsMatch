@@ -39,6 +39,12 @@ interface DocumentsPaginatedResponse {
   status_counts?: Record<string, number>;
 }
 
+interface AuthStatusResponse {
+  auth_configured?: boolean;
+  access_token?: string;
+  token_type?: string;
+}
+
 export interface LightRagReference {
   filePath: string;
   content: string[];
@@ -78,6 +84,8 @@ export function normalizeLightRagBaseUrl(value: string): string {
 export class LightRagClient {
   private readonly normalizedBaseUrl: string;
   private workspaceHeaderEnabled: boolean;
+  private authToken?: string;
+  private authAttempted = false;
 
   public constructor(private readonly config: LightRagClientConfig) {
     this.normalizedBaseUrl = normalizeLightRagBaseUrl(config.baseUrl);
@@ -239,6 +247,9 @@ export class LightRagClient {
       if (!headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
       }
+      if (this.authToken && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${this.authToken}`);
+      }
       if (this.workspaceHeaderEnabled) {
         headers.set('LIGHTRAG-WORKSPACE', this.config.workspace);
       } else {
@@ -261,6 +272,9 @@ export class LightRagClient {
           this.workspaceHeaderEnabled = false;
           return this.requestJsonInternal<T>(pathname, init, false);
         }
+        if (shouldRetryWithAuthToken(response.status) && await this.ensureAuthToken()) {
+          return this.requestJsonInternal<T>(pathname, init, allowWorkspaceFallback);
+        }
         throw new Error(`LightRAG request failed: ${response.status} ${response.statusText} ${text}`.trim());
       }
 
@@ -281,6 +295,37 @@ export class LightRagClient {
       throw error;
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private async ensureAuthToken(): Promise<boolean> {
+    if (this.authAttempted) {
+      return Boolean(this.authToken);
+    }
+
+    this.authAttempted = true;
+
+    try {
+      const targetUrl = new URL('auth-status', ensureTrailingSlash(this.normalizedBaseUrl));
+      const response = await fetch(targetUrl, {
+        headers: {
+          Accept: 'application/json'
+        }
+      });
+      if (!response.ok) {
+        return false;
+      }
+
+      const payload = await response.json() as AuthStatusResponse;
+      const token = typeof payload.access_token === 'string' ? payload.access_token.trim() : '';
+      if (!token) {
+        return false;
+      }
+
+      this.authToken = token;
+      return true;
+    } catch {
+      return false;
     }
   }
 }
@@ -314,6 +359,10 @@ function shouldRetryWithoutWorkspaceHeader(status: number, responseText: string)
   return normalized.includes('pipeline_status')
     && normalized.includes('initialize_storages')
     && normalized.includes('not found');
+}
+
+function shouldRetryWithAuthToken(status: number): boolean {
+  return status === 401 || status === 403;
 }
 
 function isMoreRecentIsoTimestamp(candidate: string, current?: string): boolean {

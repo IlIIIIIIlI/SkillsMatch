@@ -190,7 +190,7 @@
         },
         "skillMap.lightRag.workspaceMode": {
           "type": "string",
-          "default": "auto",
+          "default": "default",
           "enum": [
             "auto",
             "fixed",

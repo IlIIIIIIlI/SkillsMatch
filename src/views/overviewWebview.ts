@@ -80,6 +80,9 @@ export class OverviewWebviewSession implements vscode.Disposable {
       case 'syncKnowledgeBase':
         await this.service.syncKnowledgeBase({ announce: true });
         break;
+      case 'forceRebuildKnowledgeBase':
+        await this.service.syncKnowledgeBase({ announce: true, force: true });
+        break;
       case 'recommendSkills':
         await this.service.recommendSkills(message.question);
         break;
