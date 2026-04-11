@@ -927,17 +927,126 @@ export class SkillCatalogService {
         }
 
         if (remoteInventory && remoteInventory.totalCount > 0) {
-          const message = buildLightRagDestructiveSyncBlockedMessage(expectedSkillCount, remoteInventory);
+          // Incremental sync: compute diff between remote and local
+          const remoteFilePathSet = new Set(remoteInventory.filePaths);
+          const localFileSourceSet = new Set(expectedFileSources);
+
+          const toAdd = this.state.snapshot.skills.filter(
+            (skill) => !remoteFilePathSet.has(buildKnowledgeBaseFileSource(skill))
+          );
+          const toRemove = remoteInventory.filePaths.filter(
+            (fp) => !localFileSourceSet.has(fp)
+          );
+
+          if (toAdd.length === 0 && toRemove.length === 0) {
+            // Sets match — treat as already synced
+            const syncedAt = remoteInventory.latestUpdatedAt ?? new Date().toISOString();
+            const nextCache = {
+              ...syncCache,
+              [this.state.lightRag.workspace]: {
+                snapshotHash,
+                syncedAt,
+                skillCount: expectedSkillCount,
+                trackId: lastTrackId
+              }
+            };
+            await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
+            this.state.lightRag = {
+              ...this.state.lightRag,
+              ready: true,
+              syncing: false,
+              syncedAt,
+              statusMessage: buildRemoteKnowledgeBaseStatusMessage(expectedSkillCount, remoteInventory)
+            };
+            this.emitState();
+            return;
+          }
+
           this.state.lightRag = {
             ...this.state.lightRag,
-            ready: false,
+            statusMessage: `Incremental sync: +${toAdd.length} new, -${toRemove.length} removed...`
+          };
+          this.emitState();
+
+          if (toRemove.length > 0) {
+            await client.deleteDocumentsByFilePaths(toRemove);
+          }
+
+          if (toAdd.length > 0) {
+            const addDocuments = await mapLimit(toAdd, 4, async (skill) => {
+              let manifestContent: string | undefined;
+              try {
+                manifestContent = await loadSkillManifestContent(skill, settings.timeoutMs);
+              } catch {
+                manifestContent = undefined;
+              }
+              return {
+                fileSource: buildKnowledgeBaseFileSource(skill),
+                text: buildSkillKnowledgeDocument(skill, manifestContent)
+              };
+            });
+
+            const insertResult = await client.insertTexts(
+              addDocuments.map((entry) => entry.text),
+              addDocuments.map((entry) => entry.fileSource)
+            );
+
+            if (insertResult.trackId) {
+              lastTrackId = insertResult.trackId;
+              const pendingCache = {
+                ...syncCache,
+                [this.state.lightRag.workspace]: {
+                  snapshotHash,
+                  syncedAt: new Date().toISOString(),
+                  skillCount: expectedSkillCount,
+                  trackId: lastTrackId
+                }
+              };
+              await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, pendingCache);
+
+              try {
+                await client.waitForTrack(insertResult.trackId, addDocuments.length, settings.lightRagSyncTimeoutMs);
+              } catch (error) {
+                if (isLightRagTrackTimeout(error)) {
+                  const trackStatus = await this.readRemoteTrackStatus(client, insertResult.trackId);
+                  this.state.lightRag = {
+                    ...this.state.lightRag,
+                    ready: true,
+                    syncing: false,
+                    syncedAt: pendingCache[this.state.lightRag.workspace]?.syncedAt,
+                    statusMessage: buildLightRagBackgroundIndexingMessage(expectedSkillCount, trackStatus)
+                  };
+                  this.emitState();
+                  return;
+                }
+                throw error;
+              }
+            }
+          }
+
+          const nextCache = {
+            ...syncCache,
+            [this.state.lightRag.workspace]: {
+              snapshotHash,
+              syncedAt: new Date().toISOString(),
+              skillCount: expectedSkillCount,
+              trackId: lastTrackId
+            }
+          };
+          await this.context.globalState.update(LIGHTRAG_SYNC_CACHE_KEY, nextCache);
+          this.state.lightRag = {
+            ...this.state.lightRag,
+            ready: true,
             syncing: false,
-            statusMessage: message
+            syncedAt: nextCache[this.state.lightRag.workspace]?.syncedAt,
+            statusMessage: `LightRAG incremental sync done: +${toAdd.length} added, -${toRemove.length} removed.`
           };
           this.emitState();
 
           if (options.announce) {
-            vscode.window.showWarningMessage(message);
+            vscode.window.showInformationMessage(
+              `LightRAG incremental sync done: +${toAdd.length} added, -${toRemove.length} removed.`
+            );
           }
           return;
         }

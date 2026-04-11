@@ -25,6 +25,7 @@ interface QueryResponse {
 
 interface DocumentsPaginatedResponse {
   documents?: Array<{
+    id?: string;
     file_path?: string;
     updated_at?: string;
   }>;
@@ -60,6 +61,11 @@ export interface LightRagDocumentInventory {
   filePaths: string[];
   latestUpdatedAt?: string;
   statusCounts: Record<string, number>;
+}
+
+export interface DeleteDocumentsResponse {
+  deleted_count?: number;
+  status?: string;
 }
 
 export interface LightRagTrackStatus {
@@ -107,6 +113,17 @@ export class LightRagClient {
   public async clearDocuments(): Promise<void> {
     await this.requestJson('/documents', {
       method: 'DELETE'
+    });
+  }
+
+  public async deleteDocumentsByFilePaths(filePaths: string[]): Promise<void> {
+    if (filePaths.length === 0) {
+      return;
+    }
+
+    await this.requestJson<DeleteDocumentsResponse>('/documents/delete_by_file_paths', {
+      method: 'POST',
+      body: JSON.stringify({ file_paths: filePaths })
     });
   }
 
