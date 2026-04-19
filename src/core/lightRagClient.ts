@@ -46,6 +46,23 @@ interface AuthStatusResponse {
   token_type?: string;
 }
 
+interface DeleteDocumentsByIdsResponse {
+  status?: 'deletion_started' | 'busy' | 'not_allowed';
+  message?: string;
+  doc_id?: string;
+}
+
+interface PipelineStatusResponse {
+  busy?: boolean;
+  latest_message?: string;
+}
+
+export interface LightRagDocumentRecord {
+  id?: string;
+  filePath: string;
+  updatedAt?: string;
+}
+
 export interface LightRagReference {
   filePath: string;
   content: string[];
@@ -58,6 +75,7 @@ export interface LightRagQueryResult {
 
 export interface LightRagDocumentInventory {
   totalCount: number;
+  documents: LightRagDocumentRecord[];
   filePaths: string[];
   latestUpdatedAt?: string;
   statusCounts: Record<string, number>;
@@ -71,6 +89,17 @@ export interface DeleteDocumentsResponse {
 export interface LightRagTrackStatus {
   totalCount: number;
   statusCounts: Record<string, number>;
+}
+
+class LightRagHttpError extends Error {
+  public constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+    public readonly responseText: string
+  ) {
+    super(`LightRAG request failed: ${status} ${statusText} ${responseText}`.trim());
+    this.name = 'LightRagHttpError';
+  }
 }
 
 export function normalizeLightRagBaseUrl(value: string): string {
@@ -116,15 +145,52 @@ export class LightRagClient {
     });
   }
 
-  public async deleteDocumentsByFilePaths(filePaths: string[]): Promise<void> {
+  public async deleteDocumentsByFilePaths(
+    filePaths: string[],
+    inventory?: LightRagDocumentInventory,
+    timeoutMs = this.config.timeoutMs
+  ): Promise<void> {
     if (filePaths.length === 0) {
       return;
     }
 
-    await this.requestJson<DeleteDocumentsResponse>('/documents/delete_by_file_paths', {
-      method: 'POST',
-      body: JSON.stringify({ file_paths: filePaths })
+    try {
+      await this.requestJson<DeleteDocumentsResponse>('/documents/delete_by_file_paths', {
+        method: 'POST',
+        body: JSON.stringify({ file_paths: filePaths })
+      });
+      return;
+    } catch (error) {
+      if (!isLightRagHttpStatus(error, 404)) {
+        throw error;
+      }
+    }
+
+    const sourceInventory = inventory ?? await this.getDocumentInventory();
+    const docIds = [...new Set(sourceInventory.documents
+      .filter((document) => filePaths.includes(document.filePath) && typeof document.id === 'string' && document.id.trim().length > 0)
+      .map((document) => document.id as string))];
+
+    if (docIds.length === 0) {
+      throw new Error(
+        'LightRAG does not support deleting documents by file path, and SkillMatch could not resolve matching document IDs from the remote inventory.'
+      );
+    }
+
+    const payload = await this.requestJson<DeleteDocumentsByIdsResponse>('/documents/delete_document', {
+      method: 'DELETE',
+      body: JSON.stringify({
+        doc_ids: docIds,
+        delete_file: false,
+        delete_llm_cache: false
+      })
     });
+
+    if (payload.status === 'busy' || payload.status === 'not_allowed') {
+      throw new Error(payload.message || 'LightRAG cannot delete documents right now because the pipeline is busy.');
+    }
+
+    await this.waitForDocumentDeletion(docIds, timeoutMs);
   }
 
   public async getDocumentInventory(): Promise<LightRagDocumentInventory> {
@@ -134,6 +200,7 @@ export class LightRagClient {
     let totalCount = 0;
     let latestUpdatedAt: string | undefined;
     let statusCounts: Record<string, number> = {};
+    const documents: LightRagDocumentRecord[] = [];
     const filePaths: string[] = [];
 
     while (page <= totalPages) {
@@ -147,7 +214,7 @@ export class LightRagClient {
         })
       });
 
-      const documents = payload.documents ?? [];
+      const remoteDocuments = payload.documents ?? [];
       const pagination = payload.pagination ?? {};
       totalPages = Math.max(pagination.total_pages ?? 1, 1);
       totalCount = pagination.total_count ?? totalCount;
@@ -156,10 +223,14 @@ export class LightRagClient {
         statusCounts = payload.status_counts ?? {};
       }
 
-      for (const document of documents) {
-        if (typeof document.file_path === 'string' && document.file_path.trim().length > 0) {
-          filePaths.push(document.file_path);
-        }
+      for (const document of remoteDocuments) {
+        const normalizedFilePath = normalizeDocumentFilePath(document.file_path);
+        filePaths.push(normalizedFilePath);
+        documents.push({
+          id: typeof document.id === 'string' && document.id.trim().length > 0 ? document.id : undefined,
+          filePath: normalizedFilePath,
+          updatedAt: typeof document.updated_at === 'string' ? document.updated_at : undefined
+        });
 
         if (typeof document.updated_at === 'string' && isMoreRecentIsoTimestamp(document.updated_at, latestUpdatedAt)) {
           latestUpdatedAt = document.updated_at;
@@ -171,6 +242,7 @@ export class LightRagClient {
 
     return {
       totalCount: totalCount || filePaths.length,
+      documents,
       filePaths,
       latestUpdatedAt,
       statusCounts
@@ -194,7 +266,16 @@ export class LightRagClient {
   }
 
   public async getTrackStatus(trackId: string): Promise<LightRagTrackStatus> {
-    const payload = await this.requestJson<TrackStatusResponse>(`/documents/track_status/${encodeURIComponent(trackId)}`);
+    let payload: TrackStatusResponse;
+    try {
+      payload = await this.requestJson<TrackStatusResponse>(`/documents/track_status/${encodeURIComponent(trackId)}`);
+    } catch (error) {
+      if (!isLightRagHttpStatus(error, 404)) {
+        throw error;
+      }
+      payload = await this.requestJson<TrackStatusResponse>(`/track_status/${encodeURIComponent(trackId)}`);
+    }
+
     return {
       totalCount: payload.total_count ?? 0,
       statusCounts: payload.status_summary ?? {}
@@ -250,6 +331,34 @@ export class LightRagClient {
     };
   }
 
+  private async getPipelineStatus(): Promise<PipelineStatusResponse> {
+    return this.requestJson<PipelineStatusResponse>('/documents/pipeline_status');
+  }
+
+  private async waitForDocumentDeletion(docIds: string[], timeoutMs: number): Promise<void> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const [pipelineStatus, inventory] = await Promise.all([
+        this.getPipelineStatus(),
+        this.getDocumentInventory()
+      ]);
+      const remainingIds = new Set(
+        inventory.documents
+          .map((document) => document.id)
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      );
+
+      if (!pipelineStatus.busy && docIds.every((docId) => !remainingIds.has(docId))) {
+        return;
+      }
+
+      await delay(1500);
+    }
+
+    throw new Error(`LightRAG document deletion did not finish within ${Math.round(timeoutMs / 1000)}s.`);
+  }
+
   private async requestJson<T>(pathname: string, init?: RequestInit): Promise<T> {
     return this.requestJsonInternal<T>(pathname, init, true);
   }
@@ -292,7 +401,7 @@ export class LightRagClient {
         if (shouldRetryWithAuthToken(response.status) && await this.ensureAuthToken()) {
           return this.requestJsonInternal<T>(pathname, init, allowWorkspaceFallback);
         }
-        throw new Error(`LightRAG request failed: ${response.status} ${response.statusText} ${text}`.trim());
+        throw new LightRagHttpError(response.status, response.statusText, text);
       }
 
       const text = await response.text();
@@ -351,6 +460,11 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
+function normalizeDocumentFilePath(value?: string): string {
+  const normalized = value?.trim();
+  return normalized && normalized.length > 0 ? normalized : 'unknown_source';
+}
+
 function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
 }
@@ -406,4 +520,8 @@ function isAbortError(error: unknown): boolean {
 
   const candidate = error as { name?: string; code?: string };
   return candidate.name === 'AbortError' || candidate.code === 'ABORT_ERR';
+}
+
+function isLightRagHttpStatus(error: unknown, status: number): boolean {
+  return error instanceof LightRagHttpError && error.status === status;
 }

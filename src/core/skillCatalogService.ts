@@ -927,19 +927,15 @@ export class SkillCatalogService {
         }
 
         if (remoteInventory && remoteInventory.totalCount > 0) {
-          // Incremental sync: compute diff between remote and local
+          // Default Sync KB is additive-only. Preserve existing LightRAG content and
+          // only add missing SkillMatch documents. Force Rebuild remains the only path
+          // that replaces the remote knowledge base.
           const remoteFilePathSet = new Set(remoteInventory.filePaths);
-          const localFileSourceSet = new Set(expectedFileSources);
-
           const toAdd = this.state.snapshot.skills.filter(
             (skill) => !remoteFilePathSet.has(buildKnowledgeBaseFileSource(skill))
           );
-          const toRemove = remoteInventory.filePaths.filter(
-            (fp) => !localFileSourceSet.has(fp)
-          );
 
-          if (toAdd.length === 0 && toRemove.length === 0) {
-            // Sets match — treat as already synced
+          if (toAdd.length === 0) {
             const syncedAt = remoteInventory.latestUpdatedAt ?? new Date().toISOString();
             const nextCache = {
               ...syncCache,
@@ -956,21 +952,23 @@ export class SkillCatalogService {
               ready: true,
               syncing: false,
               syncedAt,
-              statusMessage: buildRemoteKnowledgeBaseStatusMessage(expectedSkillCount, remoteInventory)
+              statusMessage: buildLightRagDestructiveSyncBlockedMessage(expectedSkillCount, remoteInventory)
             };
             this.emitState();
+
+            if (options.announce) {
+              vscode.window.showInformationMessage(
+                buildLightRagDestructiveSyncBlockedMessage(expectedSkillCount, remoteInventory)
+              );
+            }
             return;
           }
 
           this.state.lightRag = {
             ...this.state.lightRag,
-            statusMessage: `Incremental sync: +${toAdd.length} new, -${toRemove.length} removed...`
+            statusMessage: `Additive sync: +${toAdd.length} new, existing LightRAG docs preserved...`
           };
           this.emitState();
-
-          if (toRemove.length > 0) {
-            await client.deleteDocumentsByFilePaths(toRemove);
-          }
 
           if (toAdd.length > 0) {
             const addDocuments = await mapLimit(toAdd, 4, async (skill) => {
@@ -1039,13 +1037,13 @@ export class SkillCatalogService {
             ready: true,
             syncing: false,
             syncedAt: nextCache[this.state.lightRag.workspace]?.syncedAt,
-            statusMessage: `LightRAG incremental sync done: +${toAdd.length} added, -${toRemove.length} removed.`
+            statusMessage: `LightRAG additive sync done: +${toAdd.length} added, existing docs preserved.`
           };
           this.emitState();
 
           if (options.announce) {
             vscode.window.showInformationMessage(
-              `LightRAG incremental sync done: +${toAdd.length} added, -${toRemove.length} removed.`
+              `LightRAG additive sync done: +${toAdd.length} added, existing docs preserved.`
             );
           }
           return;
