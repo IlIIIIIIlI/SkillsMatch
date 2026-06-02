@@ -1,0 +1,9 @@
+slug: 2026-06-02-idea-add-markitdown-powered-online-source-normalizer-for-skill-md-z6e
+kind: feature
+project_id: skillsmatch
+idea: 2026-06-02-add-markitdown-powered-online-source-normalizer-for-skill-md-z6e80
+capability: feature
+novelty: 3
+effort: 2
+source_trending:
+  - microsoft/markitdown
