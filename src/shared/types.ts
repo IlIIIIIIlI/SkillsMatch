@@ -98,11 +98,44 @@ export interface TagGraph {
   links: TagGraphLink[];
 }
 
+export interface AgentRecord {
+  id: string;
+  name: string;
+  skills: string[];
+  configPath: string;
+  configFormat: 'yaml' | 'toml';
+  team?: string;
+}
+
+export interface AgentGraphNode {
+  id: string;
+  label: string;
+  skills: string[];
+  skillCount: number;
+  team?: string;
+  configPath: string;
+}
+
+export interface AgentGraphLink {
+  source: string;
+  target: string;
+  sharedSkills: string[];
+  overlap: number;
+  weight: number;
+}
+
+export interface AgentGraph {
+  agents: AgentRecord[];
+  nodes: AgentGraphNode[];
+  links: AgentGraphLink[];
+}
+
 export interface ViewState {
   snapshot: SkillSnapshot;
   filter: SkillFilter;
   visibleSkills: SkillRecord[];
   graph: TagGraph;
+  agentGraph: AgentGraph;
   openRouter: OpenRouterState;
   lightRag: LightRagState;
   onlineSources: OnlineSourcesState;

@@ -5,6 +5,7 @@ import type { Dirent } from 'node:fs';
 import * as vscode from 'vscode';
 
 import type {
+  AgentGraph,
   LightRagState,
   OpenRouterModelSummary,
   ProjectWorkspaceSummary,
@@ -44,6 +45,7 @@ import {
   synthesizeSkillManifest
 } from './skillKnowledgeBase';
 import { buildTagGraph } from './tagGraph';
+import { buildAgentGraph, discoverAgentConfigs } from './agentTeamService';
 import { hashText, mapLimit, toErrorMessage } from './utils';
 
 interface OnlineCacheEntry {
@@ -758,6 +760,15 @@ export class SkillCatalogService {
         githubUrls: settings.githubUrls,
         lastError: onlineErrorMessage ?? (githubConfigErrors.length > 0 ? githubConfigErrors.join('\n') : undefined)
       };
+
+      // Discover agent team configs from workspace folders
+      try {
+        const agentRecords = await discoverAgentConfigs(workspaceFolders.map((f) => f.fsPath));
+        this.state.agentGraph = buildAgentGraph(agentRecords);
+      } catch {
+        // Non-fatal: agent graph is optional
+      }
+
       this.recomputeDerivedState({
         statusMessage
       });
@@ -1389,6 +1400,7 @@ export class SkillCatalogService {
       filter: this.state.filter,
       visibleSkills: this.state.visibleSkills,
       graph: this.state.graph,
+      agentGraph: this.state.agentGraph,
       openRouter: this.state.openRouter,
       lightRag: this.state.lightRag,
       onlineSources: this.state.onlineSources,
@@ -1732,6 +1744,7 @@ function emptyViewState(): ViewState {
     filter: { scope: 'all' },
     visibleSkills: [],
     graph: { nodes: [], links: [] },
+    agentGraph: { agents: [], nodes: [], links: [] },
     openRouter: {
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'openai/gpt-4.1-mini',

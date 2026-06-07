@@ -9,7 +9,7 @@ import {
 import * as THREE from 'three';
 
 import { applyCategoryFilter, applyScopeFilter } from '../shared/filterState';
-import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, ViewState, WebviewToExtensionMessage } from '../shared/types';
+import type { AgentGraph, ExtensionToWebviewMessage, SkillFilter, SkillRecord, ViewState, WebviewToExtensionMessage } from '../shared/types';
 
 declare function acquireVsCodeApi(): {
   postMessage(message: WebviewToExtensionMessage): void;
@@ -67,6 +67,7 @@ let focusedNodeId: string | undefined; // 2D/3D: skill id
 let expandedSkillId: string | undefined;
 let skillSearchTimer: number | undefined;
 let graphMode: '2d' | '3d' = '2d';
+let graphViewMode: 'skills' | 'agents' = 'skills';
 let showSelectedOnly = false;
 let searchIsComposing = false;
 let questionIsComposing = false;
@@ -741,16 +742,61 @@ function getOverlappingSkillIds3D(skillId: string): Set<string> | null {
   return buildLinkedSkillIdSet(skillId);
 }
 
+function buildAgentOverlapGraph(agentGraph: AgentGraph): { skills: SkillRecord[]; links: SkillLink[]; maxSharedTags: number } {
+  // Build a SkillRecord-compatible representation so the existing simulation/render code is reused unchanged.
+  // Each agent becomes a synthetic "skill" where tags = the agent's skill names.
+  const agentSkills: SkillRecord[] = agentGraph.nodes.map((node) => ({
+    id: node.id,
+    slug: node.id,
+    name: node.label,
+    description: `Agent with ${node.skillCount} skill(s): ${node.skills.slice(0, 4).join(', ')}${node.skillCount > 4 ? '…' : ''}`,
+    scope: 'global' as const,
+    origin: 'local' as const,
+    category: node.team ?? 'Agent',
+    tags: node.skills,
+    tagSource: 'none' as const,
+    sourceId: node.configPath,
+    sourceLabel: node.configPath.split('/').slice(-2).join('/'),
+    location: node.configPath,
+    manifestPath: node.configPath,
+    lastSyncedAt: new Date().toISOString()
+  }));
+
+  let maxSharedTags = 0;
+  const links: SkillLink[] = agentGraph.links
+    .filter((link) => link.overlap >= graphMinSharedTags)
+    .map((link) => {
+      maxSharedTags = Math.max(maxSharedTags, link.overlap);
+      return {
+        sourceId: link.source,
+        targetId: link.target,
+        sharedTags: link.overlap,
+        weight: link.weight
+      };
+    });
+
+  const connectedIds = new Set(links.flatMap((l) => [l.sourceId, l.targetId]));
+  const connectedSkills = agentSkills.filter((s) => connectedIds.has(s.id));
+
+  return { skills: connectedSkills, links, maxSharedTags };
+}
+
 function rebuildGraph(): void {
   if (!state) return;
 
-  const visibleSkills = getBaseVisibleSkills(state);
-  let graph = buildSkillOverlapGraph(visibleSkills);
-  const maxAllowedSharedTags = Math.max(graph.maxSharedTags, 1);
-  const nextSharedThreshold = clamp(graphMinSharedTags, 1, maxAllowedSharedTags);
-  if (nextSharedThreshold !== graphMinSharedTags) {
-    graphMinSharedTags = nextSharedThreshold;
+  let graph: { skills: SkillRecord[]; links: SkillLink[]; maxSharedTags: number };
+
+  if (graphViewMode === 'agents') {
+    graph = buildAgentOverlapGraph(state.agentGraph);
+  } else {
+    const visibleSkills = getBaseVisibleSkills(state);
     graph = buildSkillOverlapGraph(visibleSkills);
+    const maxAllowedSharedTags = Math.max(graph.maxSharedTags, 1);
+    const nextSharedThreshold = clamp(graphMinSharedTags, 1, maxAllowedSharedTags);
+    if (nextSharedThreshold !== graphMinSharedTags) {
+      graphMinSharedTags = nextSharedThreshold;
+      graph = buildSkillOverlapGraph(visibleSkills);
+    }
   }
 
   if (simulation) {
