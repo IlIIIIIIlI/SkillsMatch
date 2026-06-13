@@ -9,7 +9,8 @@ import {
 import * as THREE from 'three';
 
 import { applyCategoryFilter, applyScopeFilter } from '../shared/filterState';
-import type { ExtensionToWebviewMessage, SkillFilter, SkillRecord, ViewState, WebviewToExtensionMessage } from '../shared/types';
+import { computeSkillRiskScore, computeToolSurfaceOverlap } from '../shared/riskScore';
+import type { AgentProfileConfig, ExtensionToWebviewMessage, SkillFilter, SkillRecord, ViewState, WebviewToExtensionMessage } from '../shared/types';
 
 declare function acquireVsCodeApi(): {
   postMessage(message: WebviewToExtensionMessage): void;
@@ -78,7 +79,7 @@ let pendingSelectionEchoKey: string | null = null;
 let svgZoomScale = 1;
 let graphMinSharedTags = 1;
 let graphSpreadScale = 1.32;
-let graphColorMode: 'category' | 'overlap' = graphPrefs.colorMode ?? 'category';
+let graphColorMode: 'category' | 'overlap' | 'risk' = graphPrefs.colorMode ?? 'category';
 let graphCategoryColors: Record<string, string> = graphPrefs.categoryColors ?? {};
 let hoveredNodeId: string | undefined;
 let hoverPointer: { x: number; y: number } | undefined;
@@ -356,6 +357,8 @@ function render(): void {
     : '';
   const colorLegendLabel = graphColorMode === 'category'
     ? 'Color = category'
+    : graphColorMode === 'risk'
+    ? 'Color = risk score'
     : 'Color = overlap count';
   const hasCustomCategoryColors = Object.keys(graphCategoryColors).length > 0;
   const topPanelsToggleLabel = topPanelsCollapsed ? 'Show Top' : 'Hide Top';
@@ -485,6 +488,7 @@ function render(): void {
       <select id="graph-color-mode" class="cat-inline-select">
         <option value="category" ${graphColorMode === 'category' ? 'selected' : ''}>Category</option>
         <option value="overlap" ${graphColorMode === 'overlap' ? 'selected' : ''}>Overlap</option>
+        <option value="risk" ${graphColorMode === 'risk' ? 'selected' : ''}>Risk</option>
       </select>
     </label>
     <span id="graph-color-legend" class="cat-chip cat-chip-muted">${escapeHtml(colorLegendLabel)}</span>
@@ -640,11 +644,13 @@ function buildSkillOverlapGraph(skills: SkillRecord[]): { skills: SkillRecord[];
 
     connectedSkillIdx.add(leftIndex);
     connectedSkillIdx.add(rightIndex);
+    const tagWeight = sharedTags / Math.max(1, Math.min(leftSkill.tags.length, rightSkill.tags.length));
+    const toolOverlap = computeToolSurfaceOverlap(leftSkill, rightSkill);
     links.push({
       sourceId: leftSkill.id,
       targetId: rightSkill.id,
       sharedTags,
-      weight: sharedTags / Math.max(1, Math.min(leftSkill.tags.length, rightSkill.tags.length))
+      weight: tagWeight * 0.65 + toolOverlap * 0.35
     });
   }
 
@@ -701,7 +707,7 @@ function computeSkillLayout3D(skillNodes: SkillNode3D[], skillLinks: SkillLink[]
       const diff = positions[rightIndex].clone().sub(positions[leftIndex]);
       const distance = Math.max(diff.length(), 0.001);
       const combinedRadius = skillNodes[leftIndex].radius + skillNodes[rightIndex].radius;
-      const overlapFraction = link.sharedTags / maxSharedTags;
+      const overlapFraction = link.weight;
       const targetDistance = combinedRadius * (0.54 + (1 - overlapFraction) * 0.18) * graphSpreadScale;
       const stretch = (distance - targetDistance) / distance;
       const force = stretch * 0.14 * alpha;
@@ -1544,7 +1550,8 @@ function bindDomEvents(): void {
 
   const graphColorModeSelect = document.getElementById('graph-color-mode') as HTMLSelectElement | null;
   graphColorModeSelect?.addEventListener('change', (e) => {
-    const nextMode = (e.target as HTMLSelectElement).value === 'overlap' ? 'overlap' : 'category';
+    const val = (e.target as HTMLSelectElement).value;
+    const nextMode: 'category' | 'overlap' | 'risk' = val === 'overlap' ? 'overlap' : val === 'risk' ? 'risk' : 'category';
     if (nextMode === graphColorMode) return;
     graphColorMode = nextMode;
     persistGraphPrefs();
@@ -1916,12 +1923,15 @@ function buildGraphHoverTooltipHtml(skillId: string): string {
     .map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`)
     .join('');
 
+  const riskInfo = graphColorMode === 'risk'
+    ? computeSkillRiskScore(skill, state?.harnessProfile)
+    : undefined;
   return `<div class="graph-hover-title">${escapeHtml(skill.name)}</div>
 <div class="graph-hover-meta">
   <span class="pill">${escapeHtml(skill.category)}</span>
   <span class="pill">${skill.tags.length} tags</span>
   <span class="pill">${overlapCount} overlaps</span>
-  <span class="pill">${graphColorMode === 'category' ? 'color: category' : `color: ${overlapCount} overlaps`}</span>
+  <span class="pill">${graphColorMode === 'category' ? 'color: category' : graphColorMode === 'risk' ? `risk: ${riskInfo?.riskLevel ?? '?'}` : `color: ${overlapCount} overlaps`}</span>
 </div>
 ${sharedTagsWithFocus.length > 0
   ? `<div class="graph-hover-copy">Shared with focus</div><div class="graph-hover-tags">${sharedTagHtml}</div>`
@@ -2033,6 +2043,8 @@ function updateGraphColorLegend(): void {
   if (!legend) return;
   legend.textContent = graphColorMode === 'category'
     ? 'Color = category'
+    : graphColorMode === 'risk'
+    ? 'Color = risk score'
     : 'Color = overlap count';
 }
 
@@ -2201,10 +2213,27 @@ function resolvedCategoryColor(category: string): string {
 }
 
 function graphNodeColor(skillId: string, category: string): string {
+  if (graphColorMode === 'risk') {
+    return riskNodeColor(skillId, state?.harnessProfile);
+  }
   if (graphColorMode === 'overlap') {
     return overlapColor(skillId);
   }
   return resolvedCategoryColor(category);
+}
+
+function riskNodeColor(skillId: string, profile: AgentProfileConfig | undefined): string {
+  const skill = getSkillRecordById(skillId);
+  if (!skill) return '#8A94A6';
+  const { score } = computeSkillRiskScore(skill, profile);
+  // cool (#8A94A6 grey) → teal (#5CC8A1) → orange (#FF8A3D) → red (#F97373)
+  if (score >= 0.7) {
+    return mixHex('#FF8A3D', '#F97373', (score - 0.7) / 0.3);
+  }
+  if (score >= 0.4) {
+    return mixHex('#5CC8A1', '#FF8A3D', (score - 0.4) / 0.3);
+  }
+  return mixHex('#8A94A6', '#5CC8A1', score / 0.4);
 }
 
 function overlapColor(skillId: string): string {
@@ -2241,18 +2270,19 @@ function hexToRgb(value: string): [number, number, number] {
 }
 
 function readGraphPrefs(): {
-  colorMode?: 'category' | 'overlap';
+  colorMode?: 'category' | 'overlap' | 'risk';
   categoryColors?: Record<string, string>;
 } {
   try {
     const raw = window.localStorage.getItem('skill-map.graph-prefs.v1');
     if (!raw) return {};
     const parsed = JSON.parse(raw) as {
-      colorMode?: 'category' | 'overlap';
+      colorMode?: 'category' | 'overlap' | 'risk';
       categoryColors?: Record<string, string>;
     };
+    const colorMode = parsed.colorMode;
     return {
-      colorMode: parsed.colorMode === 'overlap' ? 'overlap' : parsed.colorMode === 'category' ? 'category' : undefined,
+      colorMode: colorMode === 'overlap' ? 'overlap' : colorMode === 'risk' ? 'risk' : colorMode === 'category' ? 'category' : undefined,
       categoryColors: parsed.categoryColors ?? {}
     };
   } catch {

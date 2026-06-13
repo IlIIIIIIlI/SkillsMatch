@@ -108,6 +108,7 @@ export interface ViewState {
   onlineSources: OnlineSourcesState;
   recommendation: SkillRecommendationState;
   projectConfig: ProjectConfigState;
+  harnessProfile?: AgentProfileConfig;
   selectedSkillId?: string;
   busy: boolean;
   statusMessage?: string;
@@ -223,4 +224,26 @@ export interface ProjectConfigState {
   applyRelativePath: string;
   lastAppliedAt?: string;
   lastAppliedCount?: number;
+}
+
+export interface AgentProfileConfig {
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  permissionMode?: 'auto' | 'bypass-permissions';
+  tokenBudget?: number;
+  riskThresholds?: {
+    review: number;
+    confirm: number;
+    block: number;
+  };
+}
+
+export type HarnessToolRisk = 'low' | 'medium' | 'high';
+
+export interface SkillRiskScore {
+  skillId: string;
+  score: number;
+  riskLevel: HarnessToolRisk;
+  dangerousToolCount: number;
+  allowedByProfile: boolean;
 }
