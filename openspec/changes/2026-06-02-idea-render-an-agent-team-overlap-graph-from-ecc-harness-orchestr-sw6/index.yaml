@@ -1,0 +1,10 @@
+slug: 2026-06-02-idea-render-an-agent-team-overlap-graph-from-ecc-harness-orchestr-sw6
+kind: feature
+project_id: skillsmatch
+idea: 2026-06-02-render-an-agent-team-overlap-graph-from-ecc-harness-orchestr-sw6z3
+capability: feature
+novelty: 4
+effort: 2
+source_trending:
+  - affaan-m/ECC
+  - revfactory/harness
