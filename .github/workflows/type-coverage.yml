@@ -1,0 +1,63 @@
+name: Type Coverage
+on:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: type-coverage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  type-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Measure type coverage (PR and base)
+        id: measure
+        run: |
+          set +e
+          corepack enable >/dev/null 2>&1
+          install() { (pnpm install --frozen-lockfile || pnpm install || yarn install || npm ci || npm install) >/dev/null 2>&1; }
+          measure() { npx -y type-coverage@2 --strict 2>/dev/null | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1; }
+          install
+          PR_LINE="$(measure)"
+          git checkout -q ${{ github.event.pull_request.base.sha }} 2>/dev/null
+          install
+          BASE_LINE="$(measure)"
+          {
+            echo "pr_line=${PR_LINE:-unknown}"
+            echo "base_line=${BASE_LINE:-unknown}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const parse = (s) => {
+              const m = (s || "").match(/\(([0-9]+) \/ ([0-9]+)\) ([0-9.]+)%/);
+              if (!m) return null;
+              const covered = +m[1], total = +m[2], pct = +m[3];
+              return { covered, total, untyped: total - covered, pct };
+            };
+            const pr = parse(${{ toJSON(steps.measure.outputs.pr_line) }});
+            const base = parse(${{ toJSON(steps.measure.outputs.base_line) }});
+            const cell = (b, p, fmt) => {
+              const bs = b == null ? "—" : fmt(b);
+              const ps = p == null ? "—" : fmt(p);
+              const d = (b != null && p != null) ? (p - b) : null;
+              const ds = d == null ? "—" : (d >= 0 ? "+" : "") + (Number.isInteger(d) ? d : d.toFixed(2));
+              return `| ${bs} | ${ps} | ${ds} |`;
+            };
+            const rows = [
+              `| Type coverage ${cell(base && base.pct, pr && pr.pct, (v) => v.toFixed(2) + "%")}`,
+              `| Typed symbols ${cell(base && base.covered, pr && pr.covered, (v) => v)}`,
+              `| Untyped symbols ${cell(base && base.untyped, pr && pr.untyped, (v) => v)}`,
+            ].join("\n");
+            const body = `## Type Coverage\n\n| Metric | Base | PR | Delta |\n|---|---|---|---|\n${rows}\n\n<sub>via \`type-coverage --strict\` · Project Steward</sub>\n<!-- steward-type-coverage -->`;
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number });
+            const existing = comments.find((c) => c.body && c.body.includes("<!-- steward-type-coverage -->"));
+            if (existing) await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
