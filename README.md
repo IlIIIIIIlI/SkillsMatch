@@ -91,3 +91,30 @@ npm run watch
 ```
 
 Then launch `Run SkillMatch` from the VS Code debugger.
+
+## Changelog
+
+### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
+
+The OpenSpec change for the upcoming harness/profile risk heatmap feature
+(`2026-06-06-idea-skill-overlap-graph-harness-profile-risk-heatmap-with-allowe-vc0`)
+had a placeholder `tasks.md` with entirely generic checklist items. A reviewer
+noted this made the plan unactionable.
+
+The tasks checklist was updated to reference the exact source locations that
+will need to change when the feature is implemented:
+
+- **`src/shared/types.ts`** — new `AgentProfileConfig`, `HarnessToolRisk`, and
+  `SkillRiskScore` types, plus an optional `harnessProfile` field on `ViewState`.
+- **`src/webview/main.ts:2203` (`graphNodeColor`)** — a new `'risk'` color mode
+  that maps an aggregated risk score (Bash/Edit/Write presence × ECC-style
+  review/confirm/block thresholds) to a cool→hot gradient.
+- **`src/webview/main.ts:598` (`buildSkillOverlapGraph`)** — tool-surface edge
+  weighting: shared allowed/disallowed tools between skill pairs blended into
+  the D3 force link `weight` and the 3D layout attraction force.
+- **`src/webview/main.ts:483`** — graph UI controls, adding `'risk'` to the
+  `#graph-color-mode` select.
+- Unit tests for the new risk-score and tool-surface overlap logic.
+
+No source code was changed; only the planning document was made concrete so
+that future implementation work can proceed without ambiguity.
