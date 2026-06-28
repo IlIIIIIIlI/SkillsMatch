@@ -319,8 +319,8 @@
   "devDependencies": {
     "@types/d3-force": "^3.0.10",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^26.0.0",
-    "@types/three": "^0.184.1",
+    "@types/node": "^26.0.1",
+    "@types/three": "^0.185.0",
     "@types/vscode": "1.125.0",
     "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.28.1",
@@ -331,6 +331,6 @@
   },
   "dependencies": {
     "d3-force": "^3.0.0",
-    "three": "^0.184.0"
+    "three": "^0.185.0"
   }
 }
