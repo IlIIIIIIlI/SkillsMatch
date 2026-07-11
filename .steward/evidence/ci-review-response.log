@@ -1,7 +1,7 @@
-CI Type Coverage Review — 2026-07-11
-======================================
+CI Type Coverage Review — 2026-07-11 (re-verified)
+====================================================
 
-PR: #17 dependabot/npm_and_yarn/npm-dependencies-ddacac936e
+PR branch: dependabot/npm_and_yarn/npm-dependencies-ddacac936e
 Change: bump three 0.184.0→0.185.1, @types/node 26.0.0→26.1.0, @types/three 0.184.1→0.185.0
 
 Reviewer comment (github-actions[bot], 2026-07-05T23:04:50Z):
@@ -13,13 +13,14 @@ Reviewer comment (github-actions[bot], 2026-07-05T23:04:50Z):
 
 Assessment:
   The CI bot comment is informational — it reports no regression and no
-  improvement in type coverage. The PR did not introduce any new untyped
-  symbols. No application source changes are required in response.
+  improvement in type coverage. The dependency bump introduced no new
+  untyped symbols. No application source changes are required in response.
 
-Local re-measure:
+Local re-measure (this session):
   $ npx -y type-coverage@2 --strict
   → (13734 / 13791) 99.58%
   → type-coverage success.
+  Matches the bot report exactly (same typed/untyped counts).
 
 Build status:
   $ npm run compile
@@ -33,7 +34,7 @@ Build status:
 
 Test suite:
   $ npx mocha --ui tdd --reporter spec "out/test/unit/**/*.test.js"
-  → 49 passing (143ms)
+  → 49 passing (114ms)
 
   Suites:
     classification (2 tests)
@@ -48,4 +49,10 @@ Test suite:
     skillParser (1 test)
     sourceSearch (3 tests)
 
-No regressions. No new untyped symbols. Build clean. No code changes needed.
+Conclusion:
+  No regressions. No new untyped symbols. Build clean. All 49 unit tests
+  pass. No application source code changes needed for this review item.
+
+README:
+  Changelog entry under "## Changelog" documents this assessment for humans
+  (2026-07-11 — CI type-coverage review: no action required).
