@@ -94,6 +94,16 @@ Then launch `Run SkillMatch` from the VS Code debugger.
 
 ## Changelog
 
+### 2026-07-11 — CI type-coverage review: no action required
+
+The automated type-coverage CI bot on the npm dependency bump PR
+(`dependabot/npm_and_yarn/npm-dependencies-ddacac936e`, three updates: `three`
+0.185.1, `@types/node` 26.1.0, `@types/three` 0.185.0) reported no delta
+between base and PR (99.58% coverage, 13 734 typed symbols, 57 untyped
+symbols — all unchanged). Local re-measure with `type-coverage --strict`
+confirmed the same figures. The dependency bump introduced no new untyped
+symbols. Compile, esbuild package, and all 49 unit tests pass clean.
+
 ### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
 
 The OpenSpec change for the upcoming harness/profile risk heatmap feature
