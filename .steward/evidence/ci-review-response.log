@@ -1,5 +1,5 @@
-CI Type Coverage Review — 2026-07-13
-====================================
+CI Type Coverage Review — re-verified 2026-07-13
+================================================
 
 PR branch: dependabot/npm_and_yarn/npm-dependencies-8d55e30f58
 Change: bump the npm-dependencies group (4 updates):
@@ -38,7 +38,7 @@ Build status:
 
 Test suite:
   $ npx mocha --ui tdd --reporter spec "out/test/unit/**/*.test.js"
-  → 49 passing (364ms)
+  → 49 passing (280ms)
 
   Suites:
     classification (2 tests)

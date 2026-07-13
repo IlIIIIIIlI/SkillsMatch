@@ -101,10 +101,12 @@ The automated type-coverage CI bot on the npm dependency bump PR
 0.185.1, `@types/three` 0.185.1, `@types/node` 26.1.1, `typescript` 7.0.2)
 reported no delta between base and PR (99.58% coverage, 13 734 typed symbols,
 57 untyped symbols — all unchanged). Local re-measure with
-`type-coverage --strict` on 2026-07-13 confirmed the same figures. The
+`type-coverage --strict` on 2026-07-13 (re-verified in the review-response
+session) confirmed the same figures: `(13734 / 13791) 99.58%`. The
 dependency bump introduced no new untyped symbols, so no application source
 changes were required. Compile (including TypeScript 7.0.2 typecheck),
-esbuild package, and all 49 unit tests pass clean.
+esbuild package, and all 49 unit tests pass clean. Evidence:
+`.steward/evidence/ci-review-response.log`.
 
 ### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
 
