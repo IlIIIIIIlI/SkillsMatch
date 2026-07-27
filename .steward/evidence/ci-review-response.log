@@ -1,4 +1,4 @@
-CI Type Coverage Review — re-verification 2026-07-27
+CI Type Coverage Review — root-cause fix 2026-07-27
 ====================================================
 
 PR branch: dependabot/npm_and_yarn/npm-dependencies-cc16be1ad6
@@ -17,31 +17,46 @@ Reviewer comment (github-actions[bot], 2026-07-26T23:05:21Z):
   | Untyped symbols | —    | —  | —     |
 
   (All cells dashed — CI measure step did not emit a parseable
-  "(covered / total) pct%" line for base or PR. Bot comment is
-  informational only; dashes do not indicate a coverage regression.)
+  coverage line for base or PR.)
 
-Assessment:
-  The dependency bump does not change application source. Local
-  re-measure with `type-coverage --strict` recovers full numbers on
-  this PR branch. Coverage matches the previously measured base:
+Root cause (addressed in this change):
+  The type-coverage workflow was fragile:
+    1. install() tried pnpm/yarn/npm with all stdout/stderr discarded,
+       so install failures left node_modules missing and measure empty.
+    2. measure() grepped type-coverage output that can include ANSI
+       color codes when FORCE_COLOR is set in the environment.
+    3. GITHUB_OUTPUT stored values like "(13734 / 13791) 99.58%" with
+       parentheses, spaces, and a trailing "%" — brittle for step
+       outputs and downstream parse.
 
-    PR (this branch, TypeScript 7.0.2):  (13734 / 13791) 99.58%
-    Typed: 13734 · Untyped: 57 · Delta vs known base: 0 / 0.00%
+Fix applied:
+  File: .github/workflows/type-coverage.yml
+  - Prefer `npm ci` (package-lock.json present) instead of silent
+    multi-package-manager fallbacks.
+  - Set NO_COLOR=1 / FORCE_COLOR=0 for the measure step.
+  - Emit metrics as plain "covered total pct" (no parentheses, no %).
+  - Write outputs with multiline GITHUB_OUTPUT delimiter form.
+  - Log raw type-coverage output when the summary line cannot be parsed.
+  - github-script parse() accepts the new format and the legacy
+    "(covered / total) pct%" form.
+  - Add a short note on the PR comment if either side fails to measure.
 
-  Simulated CI measure pipeline also parses cleanly locally:
-    measure() { npx -y type-coverage@2 --strict 2>/dev/null \
-      | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1; }
-    → PR_LINE=[(13734 / 13791) 99.58%]
-
-  Empty CI table is therefore a bot-job measurement/parse failure in
-  GitHub Actions (install or npx environment), not a real coverage
-  drop from this PR. No new untyped symbols. No application source
-  changes required.
-
-Local re-measure (this session, 2026-07-27T17:01Z):
-  $ npx -y type-coverage@2 --strict
+Local re-measure (this session, 2026-07-27):
+  $ npx --yes type-coverage@2 --strict
   → (13734 / 13791) 99.58%
-  → type-coverage success.  EXIT:0
+
+  New measure() pipeline:
+  → PR_METRICS=[13734 13791 99.58]
+  → parse → { covered: 13734, total: 13791, untyped: 57, pct: 99.58 }
+
+  Expected bot table once CI re-runs with the fixed workflow:
+  | Metric          | Base     | PR       | Delta |
+  | Type coverage   | 99.58%   | 99.58%   | +0.00 |
+  | Typed symbols   | 13734    | 13734    | +0    |
+  | Untyped symbols | 57       | 57       | +0    |
+
+  (Exact base numbers assume main matches the last measured baseline;
+  dependency-only PR does not change application TypeScript sources.)
 
 Build status:
   $ npm run compile
@@ -55,7 +70,7 @@ Build status:
 
 Test suite:
   $ npx mocha --ui tdd --reporter spec "out/test/unit/**/*.test.js"
-  → 49 passing (104ms)  TEST_EXIT:0
+  → 49 passing (292ms)  TEST_EXIT:0
 
   Suites:
     classification (2 tests)
@@ -71,12 +86,11 @@ Test suite:
     sourceSearch (3 tests)
 
 Conclusion:
-  CI type-coverage table was empty (dashes) due to a measurement/parse
-  failure in the bot job, not a real coverage drop. Local re-measure
-  confirms 99.58% on the PR branch with zero delta vs known base.
-  Compile clean under TypeScript 7.0.2. All 49 unit tests pass.
-  No application source code changes needed for this review item.
+  Empty type-coverage table was a workflow measurement bug, not a
+  coverage regression from the dependency bump. Workflow fixed so the
+  bot can report real Base/PR/Delta numbers. Application source
+  unchanged. Compile clean; 49 unit tests pass.
 
 README:
-  Changelog entry under "## Changelog" documents this assessment for humans
-  (2026-07-27 — CI type-coverage review: no action required).
+  Changelog entry under "## Changelog" documents the fix for humans
+  (2026-07-27 — Fix empty Type Coverage CI report on dependency PRs).
