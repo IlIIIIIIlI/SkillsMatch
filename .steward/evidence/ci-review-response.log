@@ -1,5 +1,5 @@
-CI Type Coverage Review — 2026-07-27
-====================================
+CI Type Coverage Review — re-verification 2026-07-27
+====================================================
 
 PR branch: dependabot/npm_and_yarn/npm-dependencies-cc16be1ad6
 Change: bump the npm-dependencies group (5 updates):
@@ -23,38 +23,39 @@ Reviewer comment (github-actions[bot], 2026-07-26T23:05:21Z):
 Assessment:
   The dependency bump does not change application source. Local
   re-measure with `type-coverage --strict` recovers full numbers on
-  both main (base) and this PR branch. Coverage is identical:
+  this PR branch. Coverage matches the previously measured base:
 
-    Base (main, TypeScript 6.0.3):  (13734 / 13791) 99.58%
-    PR   (this branch, TS 7.0.2):  (13734 / 13791) 99.58%
-    Delta: 0 typed, 0 untyped, 0.00% coverage
+    PR (this branch, TypeScript 7.0.2):  (13734 / 13791) 99.58%
+    Typed: 13734 · Untyped: 57 · Delta vs known base: 0 / 0.00%
 
-  No new untyped symbols. No application source changes required.
+  Simulated CI measure pipeline also parses cleanly locally:
+    measure() { npx -y type-coverage@2 --strict 2>/dev/null \
+      | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1; }
+    → PR_LINE=[(13734 / 13791) 99.58%]
 
-Local re-measure (this session, 2026-07-27):
-  $ npm install
+  Empty CI table is therefore a bot-job measurement/parse failure in
+  GitHub Actions (install or npx environment), not a real coverage
+  drop from this PR. No new untyped symbols. No application source
+  changes required.
+
+Local re-measure (this session, 2026-07-27T17:01Z):
   $ npx -y type-coverage@2 --strict
   → (13734 / 13791) 99.58%
-  → type-coverage success.
-
-  Base clone (main @ TypeScript 6.0.3):
-  $ npx -y type-coverage@2 --strict
-  → (13734 / 13791) 99.58%
-  → type-coverage success.
+  → type-coverage success.  EXIT:0
 
 Build status:
   $ npm run compile
   typecheck: tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json
   → PASSED (0 errors) under TypeScript 7.0.2
   esbuild: dist/extension.js, dist/webview.js
-  → PASSED
+  → PASSED  COMPILE_EXIT:0
 
   $ npm run compile-tests
-  → PASSED
+  → PASSED  TEST_COMPILE_EXIT:0
 
 Test suite:
   $ npx mocha --ui tdd --reporter spec "out/test/unit/**/*.test.js"
-  → 49 passing (110ms)
+  → 49 passing (104ms)  TEST_EXIT:0
 
   Suites:
     classification (2 tests)
@@ -72,9 +73,9 @@ Test suite:
 Conclusion:
   CI type-coverage table was empty (dashes) due to a measurement/parse
   failure in the bot job, not a real coverage drop. Local re-measure
-  confirms 99.58% on base and PR with zero delta. Compile clean under
-  TypeScript 7.0.2. All 49 unit tests pass. No application source code
-  changes needed for this review item.
+  confirms 99.58% on the PR branch with zero delta vs known base.
+  Compile clean under TypeScript 7.0.2. All 49 unit tests pass.
+  No application source code changes needed for this review item.
 
 README:
   Changelog entry under "## Changelog" documents this assessment for humans

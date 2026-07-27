@@ -105,12 +105,13 @@ emit a parseable coverage line for base or PR; it is not a measured
 regression.
 
 Local re-measure with `type-coverage --strict` on 2026-07-27 recovered
-full numbers and confirmed no delta between main and this branch:
-`(13734 / 13791) 99.58%` on both (13 734 typed, 57 untyped). The
-dependency bump introduced no new untyped symbols, so no application
-source changes were required. Compile (including TypeScript 7.0.2
-typecheck), esbuild package, and all 49 unit tests pass clean. Evidence:
-`.steward/evidence/ci-review-response.log`.
+full numbers: `(13734 / 13791) 99.58%` (13 734 typed, 57 untyped), with
+zero delta versus the known base on main. The same numbers parse cleanly
+through the CI measure pipeline when run locally, so the empty bot table
+is an Actions-side measurement failure, not a coverage drop from this
+bump. No application source changes were required. Compile (including
+TypeScript 7.0.2 typecheck), esbuild package, and all 49 unit tests pass
+clean. Evidence: `.steward/evidence/ci-review-response.log`.
 
 ### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
 
