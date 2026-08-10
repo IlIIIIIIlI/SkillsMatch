@@ -17,33 +17,78 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
       - name: Measure type coverage (PR and base)
         id: measure
+        env:
+          # Keep type-coverage output free of ANSI so grep can parse it.
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
         run: |
-          set +e
-          corepack enable >/dev/null 2>&1
-          install() { (pnpm install --frozen-lockfile || pnpm install || yarn install || npm ci || npm install) >/dev/null 2>&1; }
-          measure() { npx -y type-coverage@2 --strict 2>/dev/null | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1; }
-          install
-          PR_LINE="$(measure)"
-          git checkout -q ${{ github.event.pull_request.base.sha }} 2>/dev/null
-          install
-          BASE_LINE="$(measure)"
+          set -euo pipefail
+
+          install_deps() {
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+          }
+
+          # Emit "covered total pct" (no parentheses, no "%") so GITHUB_OUTPUT
+          # and downstream parse stay reliable across runner versions.
+          measure() {
+            local raw line covered total pct
+            raw="$(npx --yes type-coverage@2 --strict 2>&1 || true)"
+            line="$(printf '%s\n' "$raw" | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1 || true)"
+            if [ -z "$line" ]; then
+              echo "type-coverage measure failed; raw output:" >&2
+              printf '%s\n' "$raw" >&2
+              echo "unknown"
+              return 0
+            fi
+            covered="$(printf '%s\n' "$line" | grep -oE '[0-9]+' | sed -n '1p')"
+            total="$(printf '%s\n' "$line" | grep -oE '[0-9]+' | sed -n '2p')"
+            pct="$(printf '%s\n' "$line" | grep -oE '[0-9]+\.[0-9]+|[0-9]+%' | head -1 | tr -d '%')"
+            echo "${covered} ${total} ${pct}"
+          }
+
+          install_deps
+          PR_METRICS="$(measure)"
+          git checkout -q "${{ github.event.pull_request.base.sha }}"
+          install_deps
+          BASE_METRICS="$(measure)"
+
           {
-            echo "pr_line=${PR_LINE:-unknown}"
-            echo "base_line=${BASE_LINE:-unknown}"
+            echo "pr_metrics<<EOF"
+            echo "${PR_METRICS}"
+            echo "EOF"
+            echo "base_metrics<<EOF"
+            echo "${BASE_METRICS}"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+          echo "PR metrics:   ${PR_METRICS}"
+          echo "Base metrics: ${BASE_METRICS}"
       - uses: actions/github-script@v7
         with:
           script: |
             const parse = (s) => {
-              const m = (s || "").match(/\(([0-9]+) \/ ([0-9]+)\) ([0-9.]+)%/);
+              const text = (s || "").trim();
+              // Preferred: "covered total pct"
+              let m = text.match(/^([0-9]+)\s+([0-9]+)\s+([0-9.]+)$/);
+              if (m) {
+                const covered = +m[1], total = +m[2], pct = +m[3];
+                return { covered, total, untyped: total - covered, pct };
+              }
+              // Legacy: "(covered / total) pct%"
+              m = text.match(/\(([0-9]+) \/ ([0-9]+)\) ([0-9.]+)%?/);
               if (!m) return null;
               const covered = +m[1], total = +m[2], pct = +m[3];
               return { covered, total, untyped: total - covered, pct };
             };
-            const pr = parse(${{ toJSON(steps.measure.outputs.pr_line) }});
-            const base = parse(${{ toJSON(steps.measure.outputs.base_line) }});
+            const pr = parse(${{ toJSON(steps.measure.outputs.pr_metrics) }});
+            const base = parse(${{ toJSON(steps.measure.outputs.base_metrics) }});
             const cell = (b, p, fmt) => {
               const bs = b == null ? "—" : fmt(b);
               const ps = p == null ? "—" : fmt(p);
@@ -56,7 +101,10 @@ jobs:
               `| Typed symbols ${cell(base && base.covered, pr && pr.covered, (v) => v)}`,
               `| Untyped symbols ${cell(base && base.untyped, pr && pr.untyped, (v) => v)}`,
             ].join("\n");
-            const body = `## Type Coverage\n\n| Metric | Base | PR | Delta |\n|---|---|---|---|\n${rows}\n\n<sub>via \`type-coverage --strict\` · Project Steward</sub>\n<!-- steward-type-coverage -->`;
+            const note = (!pr || !base)
+              ? "\n\n> Measurement incomplete on one or both sides; see the workflow log for raw `type-coverage` output."
+              : "";
+            const body = `## Type Coverage\n\n| Metric | Base | PR | Delta |\n|---|---|---|---|\n${rows}\n${note}\n\n<sub>via \`type-coverage --strict\` · Project Steward</sub>\n<!-- steward-type-coverage -->`;
             const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number });
             const existing = comments.find((c) => c.body && c.body.includes("<!-- steward-type-coverage -->"));
             if (existing) await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });

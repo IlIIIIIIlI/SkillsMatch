@@ -94,6 +94,24 @@ Then launch `Run SkillMatch` from the VS Code debugger.
 
 ## Changelog
 
+### 2026-08-10 — Fix empty Type Coverage CI report on dependency PRs
+
+The type-coverage bot on this npm dependency bump PR posted an empty
+metric table (every cell `—`). That was not a real coverage regression:
+local `type-coverage --strict` still reports `(13734 / 13791) 99.58%`
+with zero meaningful delta versus main. The failure was in the
+measurement job itself — silent multi-package-manager installs,
+ANSI-colored output, and fragile `GITHUB_OUTPUT` values that included
+parentheses and `%`.
+
+`.github/workflows/type-coverage.yml` was hardened so the bot can emit
+real numbers again: prefer `npm ci` for this lockfile-based repo, disable
+color in the measure step, write metrics as plain `covered total pct`
+via multiline `GITHUB_OUTPUT` delimiters, log raw tool output on parse
+failure, and keep a legacy parser fallback. Application source is
+unchanged. Compile under TypeScript 7.0.2 and all unit tests pass.
+Evidence: `.steward/evidence/ci-review-response.log`.
+
 ### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
 
 The OpenSpec change for the upcoming harness/profile risk heatmap feature
