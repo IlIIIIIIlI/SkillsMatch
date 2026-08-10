@@ -11,70 +11,163 @@ jobs:
   type-coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout PR
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          path: pr
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: pr/package-lock.json
       - name: Measure type coverage (PR and base)
         id: measure
         env:
-          # Keep type-coverage output free of ANSI so grep can parse it.
+          # Prefer plain text; also strip ANSI in the parser below.
           NO_COLOR: "1"
           FORCE_COLOR: "0"
         run: |
           set -euo pipefail
 
           install_deps() {
-            if [ -f package-lock.json ]; then
-              npm ci
+            local dir="$1"
+            if [ -f "${dir}/package-lock.json" ]; then
+              npm ci --prefix "${dir}"
             else
-              npm install
+              npm install --prefix "${dir}"
             fi
           }
 
-          # Emit "covered total pct" (no parentheses, no "%") so GITHUB_OUTPUT
-          # and downstream parse stay reliable across runner versions.
+          # Writes "covered total pct" to stdout, or "unknown" on failure.
+          # Prefer --json-output (stable schema); fall back to grepping the
+          # human summary line with ANSI stripped.
           measure() {
-            local raw line covered total pct
-            raw="$(npx --yes type-coverage@2 --strict 2>&1 || true)"
-            line="$(printf '%s\n' "$raw" | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1 || true)"
-            if [ -z "$line" ]; then
-              echo "type-coverage measure failed; raw output:" >&2
-              printf '%s\n' "$raw" >&2
+            local dir="$1"
+            local raw json_line covered total pct
+            (
+              cd "${dir}"
+              # Install the tool into the project tree so we don't depend on
+              # a separate npx download cache state across checkouts.
+              npm install --no-save --no-package-lock type-coverage@2 >/dev/null 2>&1 || true
+              # Unset FORCE_COLOR entirely: FORCE_COLOR=0 still counts as "set"
+              # and can make some CLIs ignore NO_COLOR.
+              env -u FORCE_COLOR NO_COLOR=1 \
+                npx --no-install type-coverage --strict --json-output 2>/dev/null \
+                || env -u FORCE_COLOR NO_COLOR=1 \
+                  npx --yes type-coverage@2 --strict --json-output 2>/dev/null \
+                || env -u FORCE_COLOR NO_COLOR=1 \
+                  npx --yes type-coverage@2 --strict 2>&1 \
+                || true
+            ) >"${dir}/.type-coverage-raw.txt" || true
+
+            raw="$(cat "${dir}/.type-coverage-raw.txt" 2>/dev/null || true)"
+            # Strip ANSI color codes before parsing.
+            raw="$(printf '%s' "${raw}" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')"
+
+            # JSON path (type-coverage --json-output)
+            json_line="$(printf '%s\n' "${raw}" | tr -d '\r' | python3 -c '
+import sys, json, re
+text = sys.stdin.read()
+# Find a JSON object that contains correctCount/totalCount
+for m in re.finditer(r"\{[^{}]*\}", text, re.S):
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        continue
+    if "correctCount" in d and "totalCount" in d:
+        covered = int(d["correctCount"])
+        total = int(d["totalCount"])
+        pct = d.get("percent")
+        if pct is None and total:
+            pct = round(100.0 * covered / total, 2)
+        print(f"{covered} {total} {pct}")
+        sys.exit(0)
+sys.exit(1)
+' 2>/dev/null || true)"
+
+            if [ -n "${json_line}" ]; then
+              echo "${json_line}"
+              return 0
+            fi
+
+            # Human summary fallback: "(covered / total) pct%"
+            line="$(printf '%s\n' "${raw}" | grep -oE '\([0-9]+ / [0-9]+\) [0-9.]+%' | tail -1 || true)"
+            if [ -z "${line}" ]; then
+              echo "type-coverage measure failed in ${dir}; raw output:" >&2
+              printf '%s\n' "${raw}" >&2
               echo "unknown"
               return 0
             fi
-            covered="$(printf '%s\n' "$line" | grep -oE '[0-9]+' | sed -n '1p')"
-            total="$(printf '%s\n' "$line" | grep -oE '[0-9]+' | sed -n '2p')"
-            pct="$(printf '%s\n' "$line" | grep -oE '[0-9]+\.[0-9]+|[0-9]+%' | head -1 | tr -d '%')"
+            covered="$(printf '%s\n' "${line}" | grep -oE '[0-9]+' | sed -n '1p')"
+            total="$(printf '%s\n' "${line}" | grep -oE '[0-9]+' | sed -n '2p')"
+            pct="$(printf '%s\n' "${line}" | grep -oE '[0-9]+\.[0-9]+%' | head -1 | tr -d '%')"
+            if [ -z "${pct}" ]; then
+              pct="$(printf '%s\n' "${line}" | grep -oE '[0-9]+%' | head -1 | tr -d '%')"
+            fi
             echo "${covered} ${total} ${pct}"
           }
 
-          install_deps
-          PR_METRICS="$(measure)"
-          git checkout -q "${{ github.event.pull_request.base.sha }}"
-          install_deps
-          BASE_METRICS="$(measure)"
+          echo "::group::Install PR dependencies"
+          install_deps pr
+          echo "::endgroup::"
+
+          echo "::group::Measure PR type coverage"
+          PR_METRICS="$(measure pr)"
+          echo "PR metrics: ${PR_METRICS}"
+          echo "::endgroup::"
+
+          echo "::group::Install base dependencies"
+          install_deps base
+          echo "::endgroup::"
+
+          echo "::group::Measure base type coverage"
+          BASE_METRICS="$(measure base)"
+          echo "Base metrics: ${BASE_METRICS}"
+          echo "::endgroup::"
 
           {
-            echo "pr_metrics<<EOF"
-            echo "${PR_METRICS}"
-            echo "EOF"
-            echo "base_metrics<<EOF"
-            echo "${BASE_METRICS}"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+            echo "### Type coverage measure"
+            echo ""
+            echo "- PR: \`${PR_METRICS}\`"
+            echo "- Base: \`${BASE_METRICS}\`"
+            echo ""
+            echo "<details><summary>PR raw</summary>"
+            echo ""
+            echo '```'
+            cat pr/.type-coverage-raw.txt 2>/dev/null || echo "(missing)"
+            echo '```'
+            echo "</details>"
+            echo ""
+            echo "<details><summary>Base raw</summary>"
+            echo ""
+            echo '```'
+            cat base/.type-coverage-raw.txt 2>/dev/null || echo "(missing)"
+            echo '```'
+            echo "</details>"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-          echo "PR metrics:   ${PR_METRICS}"
-          echo "Base metrics: ${BASE_METRICS}"
+          # Unique delimiters avoid collisions if a value ever contains "EOF".
+          delim_pr="tc_pr_$(openssl rand -hex 8)"
+          delim_base="tc_base_$(openssl rand -hex 8)"
+          {
+            echo "pr_metrics<<${delim_pr}"
+            echo "${PR_METRICS}"
+            echo "${delim_pr}"
+            echo "base_metrics<<${delim_base}"
+            echo "${BASE_METRICS}"
+            echo "${delim_base}"
+          } >> "${GITHUB_OUTPUT}"
       - uses: actions/github-script@v7
         with:
           script: |
             const parse = (s) => {
-              const text = (s || "").trim();
+              const text = String(s || "").trim();
+              if (!text || text === "unknown") return null;
               // Preferred: "covered total pct"
               let m = text.match(/^([0-9]+)\s+([0-9]+)\s+([0-9.]+)$/);
               if (m) {
@@ -82,7 +175,7 @@ jobs:
                 return { covered, total, untyped: total - covered, pct };
               }
               // Legacy: "(covered / total) pct%"
-              m = text.match(/\(([0-9]+) \/ ([0-9]+)\) ([0-9.]+)%?/);
+              m = text.match(/\(([0-9]+)\s*\/\s*([0-9]+)\)\s*([0-9.]+)%?/);
               if (!m) return null;
               const covered = +m[1], total = +m[2], pct = +m[3];
               return { covered, total, untyped: total - covered, pct };
@@ -102,7 +195,7 @@ jobs:
               `| Untyped symbols ${cell(base && base.untyped, pr && pr.untyped, (v) => v)}`,
             ].join("\n");
             const note = (!pr || !base)
-              ? "\n\n> Measurement incomplete on one or both sides; see the workflow log for raw `type-coverage` output."
+              ? "\n\n> Measurement incomplete on one or both sides; see the workflow log / job summary for raw `type-coverage` output."
               : "";
             const body = `## Type Coverage\n\n| Metric | Base | PR | Delta |\n|---|---|---|---|\n${rows}\n${note}\n\n<sub>via \`type-coverage --strict\` · Project Steward</sub>\n<!-- steward-type-coverage -->`;
             const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number });

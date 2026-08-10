@@ -1,5 +1,5 @@
-CI Type Coverage Review — root-cause fix 2026-08-10
-====================================================
+CI Type Coverage Review — hardened fix 2026-08-10
+==================================================
 
 PR branch: dependabot/npm_and_yarn/npm-dependencies-cb7f402a91
 Change: bump the npm-dependencies group (6 updates):
@@ -17,38 +17,48 @@ Reviewer comment (github-actions[bot], 2026-08-09T23:06:29Z):
   | Typed symbols   | —    | —  | —     |
   | Untyped symbols | —    | —  | —     |
 
+  > Measurement incomplete on one or both sides; see the workflow log
+  > for raw `type-coverage` output.
+
   (All cells dashed — CI measure step did not emit a parseable
   coverage line for base or PR.)
 
-Root cause (addressed in this change):
-  The type-coverage workflow was fragile:
-    1. install() tried pnpm/yarn/npm with all stdout/stderr discarded,
-       so install failures left node_modules missing and measure empty.
-    2. measure() grepped type-coverage output that can include ANSI
-       color codes when FORCE_COLOR is set in the environment.
-    3. GITHUB_OUTPUT stored values like "(13734 / 13791) 99.58%" with
-       parentheses, spaces, and a trailing "%" — brittle for step
-       outputs and downstream parse.
+Prior attempt on this branch (fa12233) already replaced the silent
+pnpm/yarn/npm install chain with npm ci and plain GITHUB_OUTPUT metrics,
+but the bot table remained empty after re-run. This follow-up hardens
+the job further.
+
+Root causes addressed:
+  1. Mid-job `git checkout` of base.sha after measuring PR could leave
+     install/measure state hard to reason about; now two checkouts
+     (pr/ and base/) run independently.
+  2. Human summary parsing alone is fragile (ANSI, spacing, npx noise).
+     Prefer `type-coverage --strict --json-output` and parse the stable
+     JSON fields correctCount / totalCount / percent.
+  3. FORCE_COLOR=0 still counts as "set", so some CLIs ignore NO_COLOR;
+     measure now runs with `env -u FORCE_COLOR`.
+  4. GITHUB_OUTPUT delimiter "EOF" replaced with unique random
+     delimiters; raw tool output always written to GITHUB_STEP_SUMMARY.
 
 Fix applied:
   File: .github/workflows/type-coverage.yml
-  - Prefer `npm ci` (package-lock.json present) instead of silent
-    multi-package-manager fallbacks.
-  - Set NO_COLOR=1 / FORCE_COLOR=0 for the measure step.
-  - Emit metrics as plain "covered total pct" (no parentheses, no %).
-  - Write outputs with multiline GITHUB_OUTPUT delimiter form.
-  - Log raw type-coverage output when the summary line cannot be parsed.
-  - github-script parse() accepts the new format and the legacy
-    "(covered / total) pct%" form.
-  - Add a short note on the PR comment if either side fails to measure.
+  - Dual checkout (pr + base at base.sha)
+  - npm ci --prefix per tree
+  - JSON-first measure with human-summary fallback + ANSI strip
+  - Plain "covered total pct" outputs + step summary raw dumps
+  - github-script parse() rejects "unknown", accepts new + legacy forms
 
-Local re-measure (this session, 2026-08-10):
-  $ npx --yes type-coverage@2 --strict
-  → (13734 / 13791) 99.58%
+Local re-measure (this session, after npm ci → typescript@7.0.2):
+  $ npx --yes type-coverage@2 --strict --json-output
+  → {
+      "succeeded": true,
+      "correctCount": 13734,
+      "percent": 99.58,
+      "totalCount": 13791
+    }
 
-  New measure() pipeline:
-  → PR_METRICS=[13734 13791 99.58]
-  → parse → { covered: 13734, total: 13791, untyped: 57, pct: 99.58 }
+  Pipeline → PR_METRICS="13734 13791 99.58"
+  parse → { covered: 13734, total: 13791, untyped: 57, pct: 99.58 }
 
   Expected bot table once CI re-runs with the fixed workflow:
   | Metric          | Base     | PR       | Delta |
@@ -71,7 +81,7 @@ Build status:
 
 Test suite:
   $ npx mocha --ui tdd --reporter spec "out/test/unit/**/*.test.js"
-  → 49 passing (143ms)  TEST_EXIT:0
+  → 49 passing (293ms)  TEST_EXIT:0
 
   Suites:
     classification (2 tests)
@@ -88,10 +98,11 @@ Test suite:
 
 Conclusion:
   Empty type-coverage table was a workflow measurement bug, not a
-  coverage regression from the dependency bump. Workflow fixed so the
+  coverage regression from the dependency bump. Workflow reworked to
+  use JSON output, dual checkouts, and reliable GITHUB_OUTPUT so the
   bot can report real Base/PR/Delta numbers. Application source
   unchanged. Compile clean; 49 unit tests pass.
 
 README:
-  Changelog entry under "## Changelog" documents the fix for humans
-  (2026-08-10 — Fix empty Type Coverage CI report on dependency PRs).
+  Changelog entry under "## Changelog" documents the hardened fix for
+  humans (2026-08-10 — Harden Type Coverage CI after empty bot report).

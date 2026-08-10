@@ -94,23 +94,33 @@ Then launch `Run SkillMatch` from the VS Code debugger.
 
 ## Changelog
 
-### 2026-08-10 — Fix empty Type Coverage CI report on dependency PRs
+### 2026-08-10 — Harden Type Coverage CI after empty bot report
 
-The type-coverage bot on this npm dependency bump PR posted an empty
-metric table (every cell `—`). That was not a real coverage regression:
-local `type-coverage --strict` still reports `(13734 / 13791) 99.58%`
-with zero meaningful delta versus main. The failure was in the
-measurement job itself — silent multi-package-manager installs,
-ANSI-colored output, and fragile `GITHUB_OUTPUT` values that included
-parentheses and `%`.
+The type-coverage bot on this npm dependency bump PR still posted an
+empty metric table (every cell `—`, with “measurement incomplete”). That
+was not a real coverage regression: local `type-coverage --strict`
+reports `(13734 / 13791) 99.58%` under TypeScript 7.0.2, with no app
+source delta versus main. The failure was in the measurement job.
 
-`.github/workflows/type-coverage.yml` was hardened so the bot can emit
-real numbers again: prefer `npm ci` for this lockfile-based repo, disable
-color in the measure step, write metrics as plain `covered total pct`
-via multiline `GITHUB_OUTPUT` delimiters, log raw tool output on parse
-failure, and keep a legacy parser fallback. Application source is
-unchanged. Compile under TypeScript 7.0.2 and all unit tests pass.
-Evidence: `.steward/evidence/ci-review-response.log`.
+`.github/workflows/type-coverage.yml` was reworked so the bot can emit
+real Base/PR/Delta numbers:
+
+- Check out PR and base into separate directories (no mid-job
+  `git checkout` that can leave a half-switched tree).
+- Install with `npm ci` when a lockfile is present (this repo is
+  npm/lockfile-based).
+- Prefer `type-coverage --json-output` and parse `correctCount` /
+  `totalCount` / `percent` with Python; keep a grepped human-summary
+  fallback with ANSI stripped.
+- Unset `FORCE_COLOR` entirely (setting it to `0` still counts as set
+  and can defeat `NO_COLOR`).
+- Write plain `covered total pct` into `GITHUB_OUTPUT` with unique
+  random delimiters; dump raw tool output into the job summary on every
+  run.
+
+Application TypeScript sources are unchanged. Compile under TypeScript
+7.0.2 and all 49 unit tests pass. Evidence:
+`.steward/evidence/ci-review-response.log`.
 
 ### 2026-06-07 — Harness/profile risk heatmap spec: tasks made actionable
 
